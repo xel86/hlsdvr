@@ -9,7 +9,7 @@ Currently Supported Platforms:
 
 ## Usage
 
-Running magnetfinder without any arguments will launch interactive mode, prompting for similar information set by flags.
+After editing the default configuration file generated or that you grabbed from the ```examples/``` folder, simply run the ```hlsdvr``` binary.
 
 ### Flags/Arguments<br>
 ```-config <path-to-config>``` path to a configuration file to use instead of the default path(s)<br>
