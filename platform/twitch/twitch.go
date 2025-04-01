@@ -202,14 +202,14 @@ func (t *Platform) updateConfig(cfg Config) error {
 
 // Generic platform interface method
 // The caller HAS TO manage a mutex to lock the current instance of the platform before calling this.
-func (t *Platform) UpdateConfig(platformCfg any) error {
+func (t *Platform) UpdateConfig(platformCfg any) (bool, error) {
 	cfg, ok := platformCfg.(*Config)
 	if !ok {
-		return fmt.Errorf("tried to update with non-twitch config: %v", platformCfg)
+		return false, fmt.Errorf("tried to update with non-twitch config: %v", platformCfg)
 	}
 
 	if reflect.DeepEqual(*cfg, t.currentActiveCfg) {
-		return nil
+		return false, nil
 	}
 
 	slog.Info("(twitch) updating platform with new config.")
@@ -223,24 +223,29 @@ func (t *Platform) UpdateConfig(platformCfg any) error {
 		newApi := NewAPIClient(cfg.ClientID, cfg.ClientSecret, cfg.UserToken, t.httpClient)
 		err := newApi.ensureValidAppToken()
 		if err != nil {
-			return fmt.Errorf("Unable to obtain valid twitch helix api token with new config credentials: %v", err)
+			return false, fmt.Errorf(
+				"Unable to obtain valid twitch helix api token with new config credentials: %v", err)
 		}
+
 		slog.Info("(twitch) set ClientID and/or ClientSecret from new config successfully.")
+
 		if cfg.UserToken != t.currentActiveCfg.UserToken {
 			err = newApi.ensureValidUserToken()
 			if err != nil {
-				return fmt.Errorf("User token in new config is invalid: %v", err)
+				return false, fmt.Errorf("User token in new config is invalid: %v", err)
 			}
 			slog.Info("(twitch) set user token from new config successfully.")
 		}
+
 		t.api = newApi // Replace api only if all credentials are validated working.
 	} else if cfg.UserToken != t.currentActiveCfg.UserToken {
 		t.api.ReplaceUserToken(cfg.UserToken)
 		err := t.api.ensureValidUserToken()
 		if err != nil {
 			t.api.ReplaceUserToken(t.currentActiveCfg.UserToken)
-			return fmt.Errorf("User token in new config is invalid: %v. Continuing to use previous one.", err)
+			return false, fmt.Errorf("User token in new config is invalid: %v. Continuing to use previous one.", err)
 		}
+
 		slog.Info("(twitch) set user token from new config successfully.")
 	}
 
@@ -250,12 +255,12 @@ func (t *Platform) UpdateConfig(platformCfg any) error {
 	//       before updating be even more work than just updating from scratch? is it even worth
 	err := t.updateStreamers(*cfg)
 	if err != nil {
-		return fmt.Errorf("failed to get streamer(s) info from new config: %v", err)
+		return true, fmt.Errorf("failed to get streamer(s) info from new config: %v", err)
 	}
 
 	t.currentActiveCfg = *cfg
 
-	return nil
+	return true, nil
 }
 
 // Return a list of platform-generic streamers, which are copies from our internal streamer slice.

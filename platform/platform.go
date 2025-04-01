@@ -29,7 +29,12 @@ type Platform interface {
 	// must pass in the correct config (value) type for the platform.
 	// the caller must ensure that the platform this method is called on is mutex locked
 	// if the platform could be accessed via multiple threads.
-	UpdateConfig(platformCfg any) error
+	// should return:
+	// (true, nil)  if updated successfully
+	// (false, nil) if no changes were applied and no errors.
+	// (true, err)  if an error occured but some changes were applied to existing config.
+	// (false, err) if an error occured and no changes were applied
+	UpdateConfig(platformCfg any) (bool, error)
 
 	GetStreamers() []Streamer
 	GetLiveStreamers() ([]Streamer, error) // Should return a copy of the Streamers, not direct reference.

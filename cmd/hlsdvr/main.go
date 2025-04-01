@@ -237,7 +237,7 @@ loop:
 								return
 							}
 
-							err := p.UpdateConfig(pCfg)
+							applied, err := p.UpdateConfig(pCfg)
 							if err != nil {
 								slog.Error(fmt.Sprintf(
 									"Error updating platform (%s) config: %v",
@@ -245,13 +245,15 @@ loop:
 								return
 							}
 
-							sListStr := "[ "
-							for _, s := range p.GetStreamers() {
-								sListStr += (s.Username() + " ")
-							}
-							sListStr += "]"
+							if applied {
+								sListStr := "[ "
+								for _, s := range p.GetStreamers() {
+									sListStr += (s.Username() + " ")
+								}
+								sListStr += "]"
 
-							slog.Info(fmt.Sprintf("(%s) config updated, now monitoring: %s", p.Name(), sListStr))
+								slog.Info(fmt.Sprintf("(%s) config updated, now monitoring: %s", p.Name(), sListStr))
+							}
 						}()
 					}
 				}
