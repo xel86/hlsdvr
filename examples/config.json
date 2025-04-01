@@ -1,0 +1,21 @@
+{
+  "output_dir_path": "/home/user/hlsdvr",
+  "twitch": {
+    "client_id": "",
+    "client_secret": "",
+    "user_token": "",
+    "check_live_interval": 10,
+    "output_dir_path": "platform-level-override/twitch",
+    "streamers": [
+      {
+        "enabled": true,
+        "user_login": "twitch-username-example",
+        "output_dir_path": "streamer-level-override/username-archive"
+      },
+      {
+        "enabled": false,
+        "user_id": "1"
+      }
+    ]
+  }
+}
