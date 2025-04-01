@@ -32,7 +32,7 @@ The configuration is in the json format, and can be edited during runtime. Meani
 
 ### Twitch Platform Config
   ```"client_id"``` & ```"client_secret"```: Helix API credentials you must provide, [register an app](https://dev.twitch.tv/docs/authentication/register-app/) on twitch to get them.<br>
-  ```"user_token"``` User token to be used for queries to get HLS links from twitch, this will also enable turbo users to get recordings with no ad interruptions. <br>
+  ```"user_token"``` User token to be used for queries to twitch, this will also enable turbo users to get recordings with no ad interruptions. Thank you to streamlink for an already made easy [tutorial](https://streamlink.github.io/cli/plugins/twitch.html) to get your user token.<br>
  ```"check_live_interval"``` How often we check if any streamers have gone live. (in seconds)<br>
  ```"output_dir_path"``` platform-level override, will record all twitch streams to this directory with username subfolders.<br>
  ```"streamers"``` List of all the streamers to monitor and record.<br>
