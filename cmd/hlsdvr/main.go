@@ -347,7 +347,8 @@ func main() {
 			slog.Error(fmt.Sprintf("error generating default example config: %v", err))
 			return
 		}
-		slog.Info(fmt.Sprintf("Generated default config to: %s", cfgPath))
+		slog.Info(fmt.Sprintf("Generated default config to %s, edit it then rerun hlsdvr.", cfgPath))
+		return
 	}
 
 	cfg, err := ReadConfig(cfgPath)
