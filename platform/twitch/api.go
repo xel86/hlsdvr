@@ -400,7 +400,11 @@ func (c *APIClient) getPlaybackAccessToken(userLogin string) (*StreamPlaybackAcc
 
 	req.Header.Set("Client-ID", "kimne78kx3ncx6brgo4mv6wki5h1ko") // TODO: make this config/passed in
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "OAuth "+c.userToken)
+
+	// If a user token is not provided, there will most likely be ad breaks in the recordings.
+	if c.userToken != "" {
+		req.Header.Set("Authorization", "OAuth "+c.userToken)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

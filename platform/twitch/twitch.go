@@ -109,9 +109,11 @@ func NewPlatform(cfg Config) (*Platform, error) {
 		return nil, fmt.Errorf("Unable to obtain valid twitch helix api token: %v", err)
 	}
 
-	err = t.api.ensureValidUserToken()
-	if err != nil {
-		return nil, fmt.Errorf("Failed to validate user token in config: %v", err)
+	if cfg.UserToken != "" {
+		err = t.api.ensureValidUserToken()
+		if err != nil {
+			return nil, fmt.Errorf("Failed to validate user token in config: %v", err)
+		}
 	}
 
 	valid, err := t.setupValidatedStreamers(cfg)
@@ -273,25 +275,32 @@ func (t *Platform) UpdateConfig(platformCfg any) (bool, error) {
 		slog.Info("(twitch) set new ClientID and/or ClientSecret from config successfully.")
 
 		if cfg.UserToken != t.currentActiveCfg.UserToken {
-			err = newApi.ensureValidUserToken()
-			if err != nil {
-				return appliedChanges, fmt.Errorf("User token in new config is invalid: %v", err)
+			if cfg.UserToken != "" {
+				err = newApi.ensureValidUserToken()
+				if err != nil {
+					return appliedChanges, fmt.Errorf("User token in new config is invalid: %v", err)
+				}
+				slog.Info("(twitch) set new user token from config successfully.")
+			} else {
+				slog.Info("(twitch) removed user token from config successfully.")
 			}
-			slog.Info("(twitch) set new user token from config successfully.")
 		}
 
 		t.api = newApi // Replace api only if all credentials are validated working.
 		appliedChanges = true
 	} else if cfg.UserToken != t.currentActiveCfg.UserToken {
 		t.api.ReplaceUserToken(cfg.UserToken)
-		err := t.api.ensureValidUserToken()
-		if err != nil {
-			t.api.ReplaceUserToken(t.currentActiveCfg.UserToken)
-			return appliedChanges, fmt.Errorf(
-				"User token in new config is invalid: %v. Continuing to use previous one.", err)
+		if cfg.UserToken != "" {
+			err := t.api.ensureValidUserToken()
+			if err != nil {
+				t.api.ReplaceUserToken(t.currentActiveCfg.UserToken)
+				return appliedChanges, fmt.Errorf(
+					"User token in new config is invalid: %v. Continuing to use previous one.", err)
+			}
+			slog.Info("(twitch) set new user token from config successfully.")
+		} else {
+			slog.Info("(twitch) removed user token from config successfully.")
 		}
-
-		slog.Info("(twitch) set new user token from config successfully.")
 		appliedChanges = true
 	}
 
