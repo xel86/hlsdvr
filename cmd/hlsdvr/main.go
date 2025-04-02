@@ -246,13 +246,9 @@ loop:
 							}
 
 							if applied {
-								sListStr := "[ "
-								for _, s := range p.GetStreamers() {
-									sListStr += (s.Username() + " ")
-								}
-								sListStr += "]"
-
-								slog.Info(fmt.Sprintf("(%s) config updated, now monitoring: %s", p.Name(), sListStr))
+								slog.Info(fmt.Sprintf("(%s) config successfully updated", p.Name()))
+							} else {
+								slog.Info(fmt.Sprintf("(%s) no config changes were applied", p.Name()))
 							}
 						}()
 					}

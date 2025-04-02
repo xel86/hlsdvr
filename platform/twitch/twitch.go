@@ -21,6 +21,16 @@ type Streamer struct {
 	ArchivePath *string
 }
 
+// Returned from setupValidatedStreamers()
+// All Streamer(s) will have a filled in and validated user id, login, and display name.
+// user id and login maps will take in a key of the id or login respectivly and return a
+// pointer to the streamer with the same value in the Streamers slice.
+type ValidatedStreamersReturn struct {
+	Streamers    []Streamer
+	userIdMap    map[string]*Streamer
+	userLoginMap map[string]*Streamer
+}
+
 func (s *Streamer) UniqueID() string {
 	return s.UserID
 }
@@ -39,9 +49,13 @@ func (s *Streamer) GetArchiveDirPath() *string {
 
 // Manages all internal state about the twitch streamers we are recording.
 type Platform struct {
-	streamers     []Streamer // TODO: this is probably going to need a mutex and to audit every use so far.
-	userIdMap     map[string]*Streamer
-	userLoginMap  map[string]*Streamer
+	// List of streamers derived from the config file
+	// All streamers in this list have been validated to exist, and UserID, UserLogin, and DisplayName are set.
+	// TODO: this is probably going to need a mutex and to audit every use so far.
+	streamers    []Streamer
+	userIdMap    map[string]*Streamer
+	userLoginMap map[string]*Streamer
+
 	httpClient    *http.Client
 	api           *APIClient
 	checkInterval int // In seconds
@@ -87,11 +101,29 @@ func NewPlatform(cfg Config) (*Platform, error) {
 	t.userLoginMap = make(map[string]*Streamer)
 	t.streamers = []Streamer{}
 
-	err := t.updateConfig(cfg)
+	t.api = NewAPIClient(cfg.ClientID, cfg.ClientSecret, cfg.UserToken, t.httpClient)
+	t.checkInterval = cfg.CheckLiveInterval
+
+	err := t.api.ensureValidAppToken()
 	if err != nil {
-		return nil, fmt.Errorf("Failed to create platform with config: %v", err)
+		return nil, fmt.Errorf("Unable to obtain valid twitch helix api token: %v", err)
 	}
 
+	err = t.api.ensureValidUserToken()
+	if err != nil {
+		return nil, fmt.Errorf("Failed to validate user token in config: %v", err)
+	}
+
+	valid, err := t.setupValidatedStreamers(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract and validate streamer(s) from config:", err)
+	}
+
+	t.streamers = valid.Streamers
+	t.userIdMap = valid.userIdMap
+	t.userLoginMap = valid.userLoginMap
+
+	t.currentActiveCfg = cfg
 	return &t, nil
 }
 
@@ -103,51 +135,60 @@ func (t *Platform) GetCheckInterval() int {
 	return t.checkInterval
 }
 
-// Takes a parsed twitch config and updates the internal streamers slice based on whats in it.
-// Will fill in missing account information such as UserLogin and UserID if its not provided directly in
-// the config file using the twitch api, and will filter out non-existing or empty streamers.
-func (t *Platform) updateStreamers(cfg Config) error {
-	t.streamers = []Streamer{} // Reset streamers
+// Take a list of streamer configs, presumably from a config file and:
+// filter out empty ones, validate through api that they are real streamers,
+// then return a validated streamer list with the config options set.
+// If any streamers from the config can't be validated, it will be logged.
+// An error is only set if there was a direct issue retrieving any of the streamer info.
+func (t *Platform) setupValidatedStreamers(cfg Config) (*ValidatedStreamersReturn, error) {
+	var userIdsParam, userLoginsParam []string
+	userIdsParamMap := make(map[string]*StreamerConfig)
+	userLoginsParamMap := make(map[string]*StreamerConfig)
 
-	for _, sc := range cfg.Streamers {
+	for i, sc := range cfg.Streamers {
 		if !sc.Enabled {
 			continue
 		}
 
 		if (sc.UserID == "") && (sc.UserLogin == "") {
-			fmt.Println("Streamer in config with neither a user id or user login specified, skipping.")
+			slog.Info("Tried to validate a streamer in config with neither a user id nor user login specified, skipping.")
 			continue
 		}
 
-		t.streamers = append(t.streamers, Streamer{
-			UserID:    sc.UserID,
-			UserLogin: strings.ToLower(sc.UserLogin),
-		})
-	}
-
-	err := t.updateStreamersInfo()
-	if err != nil {
-		return fmt.Errorf("failed to fetch user info from twitch api: %v", err)
-	}
-
-	// Update each streamer struct's output & archive directory paths after we have validated user info
-	// and filtered out incorrectly configured streamers / streamers that don't exist.
-	for _, sc := range cfg.Streamers {
-		if !sc.Enabled {
-			continue
-		}
-
-		// See if this streamer specified in the config was validated and information
-		// retrieved from the updateStreamersInfo call earlier, and grab the pointer to it if so.
-		var streamer *Streamer
 		if sc.UserID != "" {
-			streamer, _ = t.userIdMap[sc.UserID]
-		}
-		if (streamer == nil) && (sc.UserLogin != "") {
-			streamer, _ = t.userLoginMap[sc.UserLogin]
-		}
-		if streamer == nil {
+			userIdsParam = append(userIdsParam, sc.UserID)
+			userIdsParamMap[sc.UserID] = &cfg.Streamers[i]
 			continue
+		}
+
+		if sc.UserLogin != "" {
+			userLogin := strings.ToLower(sc.UserLogin)
+			userLoginsParam = append(userLoginsParam, userLogin)
+			userLoginsParamMap[userLogin] = &cfg.Streamers[i]
+			continue
+		}
+	}
+
+	usersResp, err := t.api.GetUsers(GetUsersParams{UserIDs: userIdsParam, UserLogins: userLoginsParam})
+	if err != nil {
+		return nil, fmt.Errorf("failed to call GetUsers from api: %v", err)
+	}
+
+	var validated ValidatedStreamersReturn
+	validated.userIdMap = make(map[string]*Streamer)
+	validated.userLoginMap = make(map[string]*Streamer)
+	validStreamerIdx := 0
+
+	for _, u := range usersResp.Data {
+		// This is probably overly cautious, doubtful that the twitch api will accidentally return users
+		// we didn't request, but just making sure...
+		streamerCfg, found := userIdsParamMap[u.UserID]
+		if !found {
+			streamerCfg, found = userLoginsParamMap[u.UserLogin]
+			if !found {
+				slog.Warn(fmt.Sprintf("received data for user %s (%s) that wasn't requested?", u.UserLogin, u.UserID))
+				continue
+			}
 		}
 
 		// Override hierarchy for output & archive directory paths from config.
@@ -155,49 +196,50 @@ func (t *Platform) updateStreamers(cfg Config) error {
 		// 2. <platform-level-path>/username
 		// 3. <streamer-level-path>/
 		// Highest number path that is set is used.
+		// Unfortunately this work can't just be done in config.go because we want a validated
+		// username for the default folder path, not the user login a config MAY provide.
 		var outputDirPath string
-		if sc.OutputDirPath != nil {
-			outputDirPath = *sc.OutputDirPath // streamer level config
+		if streamerCfg.OutputDirPath != nil {
+			outputDirPath = *streamerCfg.OutputDirPath // streamer level config
 		} else {
-			outputDirPath = filepath.Join(*cfg.OutputDirPath, streamer.UserLogin)
+			// cfg.OutputDirPath guaranteed to not be nil because we set it in config.go
+			outputDirPath = filepath.Join(*cfg.OutputDirPath, u.UserLogin) // default derived from platform level
 		}
 
 		var archiveDirPath *string
-		if sc.ArchiveDirPath != nil {
-			archiveDirPath = sc.ArchiveDirPath // streamer level config
+		if streamerCfg.ArchiveDirPath != nil {
+			archiveDirPath = streamerCfg.ArchiveDirPath // streamer level config
 		} else if cfg.ArchiveDirPath != nil {
-			withUsername := filepath.Join(*cfg.ArchiveDirPath, streamer.UserLogin)
+			withUsername := filepath.Join(*cfg.ArchiveDirPath, u.UserLogin) // default derived from platform level
 			archiveDirPath = &withUsername
 		}
 
-		streamer.OutputPath = outputDirPath
-		streamer.ArchivePath = archiveDirPath
+		streamer := Streamer{
+			UserID:      u.UserID,
+			UserLogin:   u.UserLogin,
+			DisplayName: u.DisplayName,
+			OutputPath:  outputDirPath,
+			ArchivePath: archiveDirPath,
+		}
+		validated.Streamers = append(validated.Streamers, streamer)
+		validated.userIdMap[streamer.UserID] = &validated.Streamers[validStreamerIdx]
+		validated.userLoginMap[streamer.UserLogin] = &validated.Streamers[validStreamerIdx]
+		validStreamerIdx++
 	}
 
-	return nil
-}
-
-func (t *Platform) updateConfig(cfg Config) error {
-	t.api = NewAPIClient(cfg.ClientID, cfg.ClientSecret, cfg.UserToken, t.httpClient)
-	t.checkInterval = cfg.CheckLiveInterval
-
-	err := t.api.ensureValidAppToken()
-	if err != nil {
-		return fmt.Errorf("Unable to obtain valid twitch helix api token: %v", err)
+	// Check for an user ids or logins that were requested from config but were not returned from api.
+	// Almost certainely because the user doesn't exist.
+	for _, s := range cfg.Streamers {
+		_, foundId := usersResp.GetUserByID(s.UserID)
+		_, foundLogin := usersResp.GetUserByLogin(s.UserLogin)
+		if !(foundId || foundLogin) {
+			slog.Warn(fmt.Sprintf(
+				"Streamer %s (%s) from config not found by twitch, most likely user info incorrect or user doesn't exist.",
+				s.UserLogin, s.UserID))
+		}
 	}
 
-	err = t.api.ensureValidUserToken()
-	if err != nil {
-		return fmt.Errorf("Failed to validate user token in config: %v", err)
-	}
-
-	err = t.updateStreamers(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to get streamer(s) info from config: %v", err)
-	}
-
-	t.currentActiveCfg = cfg
-	return nil
+	return &validated, nil
 }
 
 // Generic platform interface method
@@ -213,6 +255,7 @@ func (t *Platform) UpdateConfig(platformCfg any) (bool, error) {
 	}
 
 	slog.Info("(twitch) updating platform with new config.")
+	appliedChanges := false
 
 	// If both either the client id or client secret was changed, create a new helix api and app token.
 	// if the user token was also changed, validate that as well on the new helix api.
@@ -223,39 +266,65 @@ func (t *Platform) UpdateConfig(platformCfg any) (bool, error) {
 		newApi := NewAPIClient(cfg.ClientID, cfg.ClientSecret, cfg.UserToken, t.httpClient)
 		err := newApi.ensureValidAppToken()
 		if err != nil {
-			return false, fmt.Errorf(
+			return appliedChanges, fmt.Errorf(
 				"Unable to obtain valid twitch helix api token with new config credentials: %v", err)
 		}
 
-		slog.Info("(twitch) set ClientID and/or ClientSecret from new config successfully.")
+		slog.Info("(twitch) set new ClientID and/or ClientSecret from config successfully.")
 
 		if cfg.UserToken != t.currentActiveCfg.UserToken {
 			err = newApi.ensureValidUserToken()
 			if err != nil {
-				return false, fmt.Errorf("User token in new config is invalid: %v", err)
+				return appliedChanges, fmt.Errorf("User token in new config is invalid: %v", err)
 			}
-			slog.Info("(twitch) set user token from new config successfully.")
+			slog.Info("(twitch) set new user token from config successfully.")
 		}
 
 		t.api = newApi // Replace api only if all credentials are validated working.
+		appliedChanges = true
 	} else if cfg.UserToken != t.currentActiveCfg.UserToken {
 		t.api.ReplaceUserToken(cfg.UserToken)
 		err := t.api.ensureValidUserToken()
 		if err != nil {
 			t.api.ReplaceUserToken(t.currentActiveCfg.UserToken)
-			return false, fmt.Errorf("User token in new config is invalid: %v. Continuing to use previous one.", err)
+			return appliedChanges, fmt.Errorf(
+				"User token in new config is invalid: %v. Continuing to use previous one.", err)
 		}
 
-		slog.Info("(twitch) set user token from new config successfully.")
+		slog.Info("(twitch) set new user token from config successfully.")
+		appliedChanges = true
 	}
 
-	t.checkInterval = cfg.CheckLiveInterval
+	if t.checkInterval != cfg.CheckLiveInterval {
+		t.checkInterval = cfg.CheckLiveInterval
+		slog.Info(fmt.Sprintf(
+			"(twitch) set new check live interval (%d) from config successfully.", t.checkInterval))
+		appliedChanges = true
+	}
 
-	// TODO: would checking if any changes were made to the streamer list cfg (both removing and/or adding streamers)
-	//       before updating be even more work than just updating from scratch? is it even worth
-	err := t.updateStreamers(*cfg)
-	if err != nil {
-		return true, fmt.Errorf("failed to get streamer(s) info from new config: %v", err)
+	// Update the internal streamers list only if there were changes to the streamers list in the config.
+	// Changing either the output or archive path's for the platform level config will result in the derived
+	// path's for each streamer to change (assuming not all of them were specifically set on the streamer level config)
+	// So recreate the internal streamers list if any of these change from the current config.
+	if !(reflect.DeepEqual(cfg.OutputDirPath, t.currentActiveCfg.OutputDirPath) &&
+		reflect.DeepEqual(cfg.ArchiveDirPath, t.currentActiveCfg.ArchiveDirPath) &&
+		reflect.DeepEqual(cfg.Streamers, t.currentActiveCfg.Streamers)) {
+		valid, err := t.setupValidatedStreamers(*cfg)
+		if err != nil {
+			return appliedChanges, fmt.Errorf("failed to setup new streamers from config changes: %v", err)
+		}
+
+		t.streamers = valid.Streamers
+		t.userIdMap = valid.userIdMap
+		t.userLoginMap = valid.userLoginMap
+
+		sListStr := "[ "
+		for _, s := range t.streamers {
+			sListStr += (s.UserLogin + " ")
+		}
+		sListStr += "]"
+
+		slog.Info(fmt.Sprintf("(twitch) streamers list updated, now monitoring: %s", sListStr))
 	}
 
 	t.currentActiveCfg = *cfg
@@ -318,68 +387,4 @@ func (t *Platform) GetHLSUrl(s platform.Streamer) (string, error) {
 
 	// TODO: configuration for quality, sorting by quality, resolution, codec, etc.
 	return streamVariants[0].Url, nil
-}
-
-// Assumes an api and internal streamers slice has been set up already.
-func (t *Platform) updateStreamersInfo() error {
-	var userIds, userLogins []string
-	idMap := make(map[string]*Streamer)
-	loginMap := make(map[string]*Streamer)
-
-	for i, s := range t.streamers {
-		if s.UserID != "" {
-			userIds = append(userIds, s.UserID)
-			idMap[s.UserID] = &t.streamers[i]
-			continue
-		}
-		if s.UserLogin != "" {
-			userLogins = append(userLogins, s.UserLogin)
-			loginMap[s.UserLogin] = &t.streamers[i]
-			continue
-		}
-		slog.Warn("twitch: tried to update a streamer's info with no user id or login set, skipping.")
-	}
-
-	usersResp, err := t.api.GetUsers(GetUsersParams{UserIDs: userIds, UserLogins: userLogins})
-	if err != nil {
-		return fmt.Errorf("Failed to GetUsers from api: %v", err)
-	}
-
-	t.userIdMap = make(map[string]*Streamer)    // reset user id -> streamer map
-	t.userLoginMap = make(map[string]*Streamer) // reset user login -> streamer map
-	for _, u := range usersResp.Data {
-		streamer, found := idMap[u.UserID]
-		if !found {
-			streamer, found = loginMap[u.UserLogin]
-			if !found {
-				slog.Warn(fmt.Sprintf("received data for user %s (%s) that wasn't requested?", u.UserLogin, u.UserID))
-				continue
-			}
-		}
-
-		streamer.UserID = u.UserID
-		streamer.UserLogin = u.UserLogin
-		streamer.DisplayName = u.DisplayName
-		t.userIdMap[streamer.UserID] = streamer
-		t.userLoginMap[streamer.UserLogin] = streamer
-
-		// Delete streamers from these temporary maps as we successfully update their info.
-		// makes it easy to check if any streamers didn't get any data returned.
-		delete(idMap, u.UserID)
-		delete(loginMap, u.UserLogin)
-	}
-
-	// Check for an user ids or logins that were requested but not returned from api.
-	// Almost certainely because the user doesn't exist.
-	for _, streamer := range t.streamers {
-		_, foundID := idMap[streamer.UserID]
-		_, foundLogin := loginMap[streamer.UserLogin]
-		if foundID || foundLogin {
-			slog.Warn(fmt.Sprintf(
-				"Streamer %s (%s) was not returned from GetUsers, most likely user info incorrect or user doesn't exist.",
-				streamer.UserLogin, streamer.UserID))
-		}
-	}
-
-	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -70,11 +71,31 @@ type APIGetStreamsResponse struct {
 type GetUsersParams GetStreamsParams
 
 type APIGetUsersResponse struct {
-	Data []struct {
-		UserID      string `json:"id"`
-		UserLogin   string `json:"login"`
-		DisplayName string `json:"display_name"`
-	} `json:"data"`
+	Data         []APIGetUsersData `json:"data"`
+	userIdMap    map[string]*APIGetUsersData
+	userLoginMap map[string]*APIGetUsersData
+}
+
+type APIGetUsersData struct {
+	UserID      string `json:"id"`
+	UserLogin   string `json:"login"`
+	DisplayName string `json:"display_name"`
+}
+
+func (r *APIGetUsersResponse) GetUserByID(id string) (*APIGetUsersData, bool) {
+	if id == "" {
+		return nil, false
+	}
+	user, exists := r.userIdMap[id]
+	return user, exists
+}
+
+func (r *APIGetUsersResponse) GetUserByLogin(login string) (*APIGetUsersData, bool) {
+	if login == "" {
+		return nil, false
+	}
+	user, exists := r.userLoginMap[strings.ToLower(login)]
+	return user, exists
 }
 
 // Twitch GQL response for playbackaccesstoken request endpoint
@@ -281,6 +302,13 @@ func (c *APIClient) GetUsers(params GetUsersParams) (*APIGetUsersResponse, error
 	var getUsersResp APIGetUsersResponse
 	if err := json.NewDecoder(resp.Body).Decode(&getUsersResp); err != nil {
 		return nil, fmt.Errorf("failed to parse GetStreams response json: %w", err)
+	}
+
+	getUsersResp.userIdMap = make(map[string]*APIGetUsersData, len(getUsersResp.Data))
+	getUsersResp.userLoginMap = make(map[string]*APIGetUsersData, len(getUsersResp.Data))
+	for i, user := range getUsersResp.Data {
+		getUsersResp.userIdMap[user.UserID] = &getUsersResp.Data[i]
+		getUsersResp.userLoginMap[user.UserLogin] = &getUsersResp.Data[i]
 	}
 
 	return &getUsersResp, nil
