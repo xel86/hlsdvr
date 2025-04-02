@@ -325,11 +325,12 @@ func (t *Platform) UpdateConfig(platformCfg any) (bool, error) {
 		sListStr += "]"
 
 		slog.Info(fmt.Sprintf("(twitch) streamers list updated, now monitoring: %s", sListStr))
+		appliedChanges = true
 	}
 
 	t.currentActiveCfg = *cfg
 
-	return true, nil
+	return appliedChanges, nil
 }
 
 // Return a list of platform-generic streamers, which are copies from our internal streamer slice.

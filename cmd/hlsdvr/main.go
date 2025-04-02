@@ -248,7 +248,8 @@ loop:
 							if applied {
 								slog.Info(fmt.Sprintf("(%s) config successfully updated", p.Name()))
 							} else {
-								slog.Info(fmt.Sprintf("(%s) no config changes were applied", p.Name()))
+								slog.Info(fmt.Sprintf(
+									"(%s) config successfully updated, but no changes were applied", p.Name()))
 							}
 						}()
 					}
