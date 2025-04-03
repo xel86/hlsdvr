@@ -69,8 +69,8 @@ type Recorder struct {
 }
 
 type RecordingReport struct {
-	BytesDownloaded   int
-	RecordingDuration time.Time
+	BytesWritten      int
+	RecordingDuration int
 	GracefulEnd       bool // This is true only if the m3u8 playlist delievered the #EXT-X-ENDLIST tag.
 }
 
@@ -305,7 +305,7 @@ func (r *Recorder) Record() (RecordingReport, error) {
 			if err != nil {
 				return report, fmt.Errorf("Error writing media segment data to file: %v", err)
 			}
-			report.BytesDownloaded += n
+			report.BytesWritten += n
 		}
 
 		// Check if the stream/playlist has ended

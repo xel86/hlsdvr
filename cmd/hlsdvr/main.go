@@ -5,7 +5,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -40,6 +42,14 @@ type PlatformCommandMsg struct {
 type PlatformCommandSender struct {
 	platformChans map[string]chan PlatformCommandMsg // platform.Name() key -> channel value
 	mutex         sync.RWMutex
+}
+
+type DownloadSummary struct {
+	Filename          string
+	FullPath          string
+	BytesWritten      int
+	RecordingDuration int
+	GracefulEnd       bool
 }
 
 func NewPlatformCommandSender(platforms []platform.Platform) *PlatformCommandSender {
@@ -103,6 +113,53 @@ func (pcs *PlatformCommandSender) RemovePlatform(platformName string) {
 	close(ch)
 }
 
+func HumanReadableBytes(b int) string {
+	bf := float64(b)
+	for _, unit := range []string{"", "Ki", "Mi", "Gi", "Ti"} {
+		if math.Abs(bf) < 1024.0 {
+			return fmt.Sprintf("%3.1f %sB", bf, unit)
+		}
+		bf /= 1024.0
+	}
+	return fmt.Sprintf("%.1f YiB", bf)
+}
+
+func MoveFile(sourcePath string, destDirPath string, destFileName string) error {
+	inputFile, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("Couldn't open source file: %v", err)
+	}
+	defer inputFile.Close()
+
+	if err := os.MkdirAll(destDirPath, 0755); err != nil {
+		return fmt.Errorf("error creating directory %s to move/archive stream(s) into: %v",
+			destDirPath, err)
+	}
+
+	// don't open a file if it already exists.
+	destPath := filepath.Join(destDirPath, destFileName)
+	outputFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return fmt.Errorf("Couldn't create dest file: %v", err)
+	}
+	defer outputFile.Close()
+
+	_, err = io.Copy(outputFile, inputFile)
+	if err != nil {
+		return fmt.Errorf("Couldn't copy to dest from source: %v", err)
+	}
+
+	// for Windows, close before trying to remove: https://stackoverflow.com/a/64943554/246801
+	inputFile.Close()
+
+	err = os.Remove(sourcePath)
+	if err != nil {
+		return fmt.Errorf("Couldn't remove source file: %v", err)
+	}
+
+	return nil
+}
+
 func createPlatformsFromConfigs(cfg Config) ([]platform.Platform, error) {
 	var platforms []platform.Platform
 	if cfg.TwitchConfig != nil {
@@ -117,31 +174,36 @@ func createPlatformsFromConfigs(cfg Config) ([]platform.Platform, error) {
 }
 
 // TODO: probably want two contexts for the future, one for global context and one for streamer specific disabling.
-func downloadHLS(ctx context.Context, url string, s platform.Streamer, platformName string) {
-	slog.Info(fmt.Sprintf("Starting to record streamer %s (%s)", s.Username(), platformName))
-
+func downloadHLS(ctx context.Context, url string, s platform.Streamer) (*DownloadSummary, error) {
+	var returnErr error
 	if err := os.MkdirAll(s.GetOutputDirPath(), 0755); err != nil {
-		slog.Error(fmt.Sprintf("(%s) error creating directory %s to download stream into: %v",
-			platformName, s.GetOutputDirPath(), err))
-		return
+		return nil, fmt.Errorf("error creating directory %s to download stream into: %v",
+			s.GetOutputDirPath(), err)
 	}
 
 	// TODO: make the filename template configurable?
 	fileName := fmt.Sprintf("%s-%s.ts", s.Username(), time.Now().Format("20060102_150405"))
+	fullPath := filepath.Join(s.GetOutputDirPath(), fileName)
 	recorder := hls.NewRecorder(ctx, s.Username(),
 		&http.Client{Timeout: 10 * time.Second}, url,
-		filepath.Join(s.GetOutputDirPath(), fileName))
+		fullPath)
 
 	report, err := recorder.Record()
 	if err != nil {
-		slog.Error(fmt.Sprintf("error recording %s hls stream: %v", s.Username(), err))
+		returnErr = fmt.Errorf("error recording %s hls stream: %v", s.Username(), err)
+		if report.BytesWritten == 0 {
+			return nil, returnErr
+		}
 	}
 
-	if report.GracefulEnd {
-		slog.Info(fmt.Sprintf("(%s) %s went offline, recording finished.", platformName, s.Username()))
-	} else {
-		slog.Info(fmt.Sprintf("(%s) recording for %s ended abruptly.", platformName, s.Username()))
-	}
+	return &DownloadSummary{
+		Filename:          fileName,
+		FullPath:          fullPath,
+		BytesWritten:      report.BytesWritten,
+		RecordingDuration: report.RecordingDuration,
+		GracefulEnd:       report.GracefulEnd,
+	}, returnErr
+
 }
 
 func monitorPlatform(ctx context.Context, p platform.Platform, cmdMsgChan <-chan PlatformCommandMsg) {
@@ -156,7 +218,7 @@ func monitorPlatform(ctx context.Context, p platform.Platform, cmdMsgChan <-chan
 	var wg sync.WaitGroup
 
 	// string is from a platform.Streamer's UniqueID().
-	recordingMap := make(map[string]bool)
+	recordingMap := make(map[string]struct{})
 	recordingMutex := sync.Mutex{}
 
 	// to lock the entire platform struct from use, mainly to be used when updating config.
@@ -191,15 +253,55 @@ loop:
 					continue
 				}
 
-				recordingMap[liveStreamer.UniqueID()] = true
+				recordingMap[liveStreamer.UniqueID()] = struct{}{}
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					downloadHLS(ctx, hlsUrl, liveStreamer, p.Name())
+					slog.Info(fmt.Sprintf("Starting to record streamer %s (%s)", liveStreamer.Username(), p.Name()))
+
+					summary, err := downloadHLS(ctx, hlsUrl, liveStreamer)
 
 					recordingMutex.Lock()
 					delete(recordingMap, liveStreamer.UniqueID())
 					recordingMutex.Unlock()
+
+					if err != nil {
+						if summary != nil {
+							slog.Error(fmt.Sprintf("(%s) error downloading mid-stream for %s: %v",
+								p.Name(), liveStreamer.Username(), err))
+						} else {
+							slog.Error(fmt.Sprintf("(%s) error starting stream download, no file made for %s: %v",
+								p.Name(), liveStreamer.Username(), err))
+							return
+						}
+					}
+
+					if summary == nil {
+						slog.Warn(fmt.Sprintf("(%s) %s stream download has no summary, and also no error...",
+							p.Name(), liveStreamer.Username()))
+						return
+					}
+
+					if summary.GracefulEnd {
+						slog.Info(fmt.Sprintf("(%s) %s went offline, successful recording: %s (%s)",
+							p.Name(), liveStreamer.Username(), summary.Filename, HumanReadableBytes(summary.BytesWritten)))
+					} else {
+						slog.Info(fmt.Sprintf("(%s) recording for %s ended abruptly, stopped recording: %s (%s)",
+							p.Name(), liveStreamer.Username(), summary.Filename, HumanReadableBytes(summary.BytesWritten)))
+					}
+
+					// If an archive dir path has been set in the config for either the top, platform, or streamer level,
+					// move the finished downloaded stream file into the archive directory.
+					if liveStreamer.GetArchiveDirPath() != nil {
+						err := MoveFile(summary.FullPath, *liveStreamer.GetArchiveDirPath(), summary.Filename)
+						if err != nil {
+							slog.Error(fmt.Sprintf("(%s) error moving recording %s into archive %s",
+								p.Name(), summary.Filename, *liveStreamer.GetArchiveDirPath()))
+						} else {
+							slog.Info(fmt.Sprintf("(%s) moved recording %s into %s",
+								p.Name(), summary.Filename, *liveStreamer.GetArchiveDirPath()))
+						}
+					}
 				}()
 			}
 		}
@@ -337,6 +439,7 @@ func main() {
 	go func() {
 		sig := <-sigChan
 		slog.Info(fmt.Sprintf("Received signal: %v", sig))
+		slog.Info("Shutting down... stopping all recordings and doing any post-recording processing.")
 		cancel()
 	}()
 
