@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -76,7 +77,7 @@ type RecordingReport struct {
 func GetM3U8PlaylistData(httpClient *http.Client, url string) (string, error) {
 	resp, err := httpClient.Get(url)
 	if err != nil {
-		return "", fmt.Errorf("error performaing GET request: %w", err)
+		return "", fmt.Errorf("error performing GET request: %s", removeUrlsFromString(err.Error()))
 	}
 	defer resp.Body.Close()
 
@@ -222,7 +223,8 @@ func (r *Recorder) Record() (RecordingReport, error) {
 		playlistData, err := GetM3U8PlaylistData(r.httpClient, r.url)
 		if err != nil {
 			if retry {
-				slog.Warn(fmt.Sprintf("hls (%s): failed to get m3u8 media playlist: %v. Retrying...", r.identifier, err))
+				slog.Warn(fmt.Sprintf("(hls) %s: failed to get m3u8 media playlist: %v. Retrying...",
+					r.identifier, err))
 				retry = false
 				time.Sleep(1 * time.Second) // Arbitrary 1 second sleep in hope that playlist fixes itself.
 				continue
@@ -233,7 +235,8 @@ func (r *Recorder) Record() (RecordingReport, error) {
 		playlist, err := parseM3U8MediaPlaylist(playlistData)
 		if err != nil {
 			if retry {
-				slog.Warn(fmt.Sprintf("hls (%s): failed to parse m3u8 media playlist: %v. Retrying...", r.identifier, err))
+				slog.Warn(fmt.Sprintf("(hls) %s: failed to parse m3u8 media playlist: %v. Retrying...",
+					r.identifier, err))
 				retry = false
 				time.Sleep(1 * time.Second) // Arbitrary 1 second sleep in hope that playlist fixes itself.
 				continue
@@ -269,7 +272,7 @@ func (r *Recorder) Record() (RecordingReport, error) {
 					segmentErrors += segment.Data.Err.Error() + " "
 				}
 			}
-			slog.Warn(fmt.Sprintf("hls: %v: %s", err, segmentErrors))
+			slog.Warn(fmt.Sprintf("(hls) %s: %v: %s", r.identifier, err, segmentErrors))
 		}
 
 		// Assign the last media sequence number from the current playlist segments as the last seen one.
@@ -279,7 +282,7 @@ func (r *Recorder) Record() (RecordingReport, error) {
 		// By the time this line will be called, we have already attempted to download the segment twice.
 		if len(playlist.Segments) > 0 {
 			newLastSeenSeqNum := playlist.Segments[len(playlist.Segments)-1].MediaSequenceNum
-			slog.Debug(fmt.Sprintf("hls (%s): processed segments %d -> %d",
+			slog.Debug(fmt.Sprintf("(hls) %s: processed segments %d -> %d",
 				r.identifier, r.lastSeenSeqNum, newLastSeenSeqNum))
 			r.lastSeenSeqNum = newLastSeenSeqNum
 		}
@@ -316,7 +319,9 @@ func (r *Recorder) Record() (RecordingReport, error) {
 		// so we on a new hiccup in the future we will retry once again.
 		if !retry {
 			retry = true
-			slog.Info("Successfully recovered from a playlist error after retrying!")
+			slog.Info(fmt.Sprintf(
+				"(hls) %s: successfully recovered from a playlist error after retrying!",
+				r.identifier))
 		}
 
 		select {
@@ -375,7 +380,7 @@ func (r *Recorder) downloadSegmentsData(segments []M3U8Segment) error {
 func (r *Recorder) getSegment(segment M3U8Segment) error {
 	resp, err := r.httpClient.Get(segment.Url)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s", removeUrlsFromString(err.Error()))
 	}
 	defer resp.Body.Close()
 
@@ -487,4 +492,23 @@ func FullTimeParse(value string) (time.Time, error) {
 		}
 	}
 	return t, err
+}
+
+// This replaces all urls from a string with https://...<ext>
+// The main intention is to use this to remove urls from http client errors in hls functions
+// because they are usually incredibly long and don't actually provide any context due to the nature
+// of how the playlist links actually look. We provide context on the errors ourselves.
+func removeUrlsFromString(errMsg string) string {
+	urlRegex := regexp.MustCompile(`https://[^\s"']+`)
+
+	// Find all URLs in the error message and replace them with https://...ext
+	return urlRegex.ReplaceAllStringFunc(errMsg, func(url string) string {
+		ext := path.Ext(url)
+
+		if ext == "" {
+			return "https://..."
+		}
+
+		return "https://..." + strings.TrimPrefix(ext, ".")
+	})
 }
