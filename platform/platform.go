@@ -1,5 +1,7 @@
 package platform
 
+import "github.com/xel86/hlsdvr/hls"
+
 // Uniform names that we should use across code base for a platform.
 // This is important to be consistent because we will not *always* grab the name from
 // a platform with the platform interface Name() method.
@@ -38,5 +40,5 @@ type Platform interface {
 
 	GetStreamers() []Streamer
 	GetLiveStreamers() ([]Streamer, error) // Should return a copy of the Streamers, not direct reference.
-	GetHLSUrl(s Streamer) (string, error)
+	GetHLSStream(s Streamer) (hls.M3U8StreamVariant, error)
 }

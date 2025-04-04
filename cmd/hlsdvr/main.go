@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -42,14 +43,6 @@ type PlatformCommandMsg struct {
 type PlatformCommandSender struct {
 	platformChans map[string]chan PlatformCommandMsg // platform.Name() key -> channel value
 	mutex         sync.RWMutex
-}
-
-type DownloadSummary struct {
-	Filename          string
-	FullPath          string
-	BytesWritten      int
-	RecordingDuration int
-	GracefulEnd       bool
 }
 
 func NewPlatformCommandSender(platforms []platform.Platform) *PlatformCommandSender {
@@ -124,6 +117,28 @@ func HumanReadableBytes(b int) string {
 	return fmt.Sprintf("%.1f YiB", bf)
 }
 
+func HumanReadableSeconds(seconds int) string {
+	duration := time.Duration(seconds) * time.Second
+
+	hours := int(duration.Hours())
+	minutes := int(duration.Minutes()) % 60
+	secs := int(duration.Seconds()) % 60
+
+	if hours > 0 {
+		return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, secs)
+	} else {
+		return fmt.Sprintf("%02d:%02d", minutes, secs)
+	}
+}
+
+func DigestInfoString(d hls.RecordingDigest) string {
+	return fmt.Sprintf("[%s]: %s / %s (%dx%d @ %.2f)",
+		path.Base(d.OutputPath),
+		HumanReadableBytes(d.BytesWritten),
+		HumanReadableSeconds(int(d.RecordingDuration)),
+		d.Width, d.Height, d.FrameRate)
+}
+
 func MoveFile(sourcePath string, destDirPath string, destFileName string) error {
 	inputFile, err := os.Open(sourcePath)
 	if err != nil {
@@ -174,36 +189,31 @@ func createPlatformsFromConfigs(cfg Config) ([]platform.Platform, error) {
 }
 
 // TODO: probably want two contexts for the future, one for global context and one for streamer specific disabling.
-func downloadHLS(ctx context.Context, url string, s platform.Streamer) (*DownloadSummary, error) {
+func downloadHLS(ctx context.Context,
+	hlsStream hls.M3U8StreamVariant,
+	s platform.Streamer, outputPath string) (*hls.RecordingDigest, error) {
 	var returnErr error
 	if err := os.MkdirAll(s.GetOutputDirPath(), 0755); err != nil {
 		return nil, fmt.Errorf("error creating directory %s to download stream into: %v",
 			s.GetOutputDirPath(), err)
 	}
 
-	// TODO: make the filename template configurable?
-	fileName := fmt.Sprintf("%s-%s.ts", s.Username(), time.Now().Format("20060102_150405"))
-	fullPath := filepath.Join(s.GetOutputDirPath(), fileName)
-	recorder := hls.NewRecorder(ctx, s.Username(),
-		&http.Client{Timeout: 10 * time.Second}, url,
-		fullPath)
+	recorder := hls.NewRecorder(
+		ctx,
+		s.Username(),
+		&http.Client{Timeout: 10 * time.Second},
+		hlsStream,
+		outputPath)
 
-	report, err := recorder.Record()
+	digest, err := recorder.Record()
 	if err != nil {
 		returnErr = fmt.Errorf("error recording %s hls stream: %v", s.Username(), err)
-		if report.BytesWritten == 0 {
+		if digest.BytesWritten == 0 {
 			return nil, returnErr
 		}
 	}
 
-	return &DownloadSummary{
-		Filename:          fileName,
-		FullPath:          fullPath,
-		BytesWritten:      report.BytesWritten,
-		RecordingDuration: report.RecordingDuration,
-		GracefulEnd:       report.GracefulEnd,
-	}, returnErr
-
+	return &digest, nil
 }
 
 func monitorPlatform(ctx context.Context, p platform.Platform, cmdMsgChan <-chan PlatformCommandMsg) {
@@ -237,7 +247,7 @@ loop:
 
 		liveStreamers, err := p.GetLiveStreamers()
 		if err != nil {
-			slog.Error(fmt.Sprintf("Failed to get %s streamers who are live: %v", p.Name(), err))
+			slog.Error(fmt.Sprintf("(%s) failed to get streamers who are live: %v", p.Name(), err))
 			return
 		}
 
@@ -245,7 +255,7 @@ loop:
 		for _, liveStreamer := range liveStreamers {
 			_, found := recordingMap[liveStreamer.UniqueID()]
 			if !found {
-				hlsUrl, err := p.GetHLSUrl(liveStreamer)
+				hls, err := p.GetHLSStream(liveStreamer)
 				if err != nil {
 					slog.Error(
 						fmt.Sprintf("(%s) error getting hls url for %s: %v",
@@ -257,16 +267,20 @@ loop:
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					slog.Info(fmt.Sprintf("Starting to record streamer %s (%s)", liveStreamer.Username(), p.Name()))
+					slog.Info(fmt.Sprintf("(%s) starting to record streamer %s", p.Name(), liveStreamer.Username()))
 
-					summary, err := downloadHLS(ctx, hlsUrl, liveStreamer)
+					// TODO: make the filename template configurable?
+					fileName := fmt.Sprintf("%s-%s.ts", liveStreamer.Username(), time.Now().Format("20060102_150405"))
+					outputPath := filepath.Join(liveStreamer.GetOutputDirPath(), fileName)
+
+					digest, err := downloadHLS(ctx, hls, liveStreamer, outputPath)
 
 					recordingMutex.Lock()
 					delete(recordingMap, liveStreamer.UniqueID())
 					recordingMutex.Unlock()
 
 					if err != nil {
-						if summary != nil {
+						if digest != nil {
 							slog.Error(fmt.Sprintf("(%s) error downloading mid-stream for %s: %v",
 								p.Name(), liveStreamer.Username(), err))
 						} else {
@@ -276,30 +290,30 @@ loop:
 						}
 					}
 
-					if summary == nil {
-						slog.Warn(fmt.Sprintf("(%s) %s stream download has no summary, and also no error...",
+					if digest == nil {
+						slog.Warn(fmt.Sprintf("(%s) %s stream download has no digest, and also no error...",
 							p.Name(), liveStreamer.Username()))
 						return
 					}
 
-					if summary.GracefulEnd {
-						slog.Info(fmt.Sprintf("(%s) %s went offline, successful recording: %s (%s)",
-							p.Name(), liveStreamer.Username(), summary.Filename, HumanReadableBytes(summary.BytesWritten)))
+					if digest.GracefulEnd {
+						slog.Info(fmt.Sprintf("(%s) %s went offline %s",
+							p.Name(), liveStreamer.Username(), DigestInfoString(*digest)))
 					} else {
-						slog.Info(fmt.Sprintf("(%s) recording for %s ended abruptly, stopped recording: %s (%s)",
-							p.Name(), liveStreamer.Username(), summary.Filename, HumanReadableBytes(summary.BytesWritten)))
+						slog.Info(fmt.Sprintf("(%s) recording for %s ended abruptly %s",
+							p.Name(), liveStreamer.Username(), DigestInfoString(*digest)))
 					}
 
 					// If an archive dir path has been set in the config for either the top, platform, or streamer level,
 					// move the finished downloaded stream file into the archive directory.
 					if liveStreamer.GetArchiveDirPath() != nil {
-						err := MoveFile(summary.FullPath, *liveStreamer.GetArchiveDirPath(), summary.Filename)
+						err := MoveFile(outputPath, *liveStreamer.GetArchiveDirPath(), fileName)
 						if err != nil {
 							slog.Error(fmt.Sprintf("(%s) error moving recording %s into archive %s",
-								p.Name(), summary.Filename, *liveStreamer.GetArchiveDirPath()))
+								p.Name(), fileName, *liveStreamer.GetArchiveDirPath()))
 						} else {
 							slog.Info(fmt.Sprintf("(%s) moved recording %s into %s",
-								p.Name(), summary.Filename, *liveStreamer.GetArchiveDirPath()))
+								p.Name(), fileName, *liveStreamer.GetArchiveDirPath()))
 						}
 					}
 				}()

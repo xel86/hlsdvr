@@ -382,19 +382,21 @@ func (t *Platform) GetLiveStreamers() ([]platform.Streamer, error) {
 	return liveStreamers, nil
 }
 
-func (t *Platform) GetHLSUrl(s platform.Streamer) (string, error) {
+func (t *Platform) GetHLSStream(s platform.Streamer) (hls.M3U8StreamVariant, error) {
 	token, err := t.api.getPlaybackAccessToken(s.Username())
 	if err != nil {
-		return "", fmt.Errorf("Twitch: Error getting playback access token: %v", err)
+		return hls.M3U8StreamVariant{},
+			fmt.Errorf("Twitch: Error getting playback access token: %v", err)
 	}
 
 	variantPlaylistUrl := makeUsherM3U8PlaylistUrl(s.Username(), token)
 
 	streamVariants, err := hls.GetM3U8StreamVariants(t.httpClient, variantPlaylistUrl)
 	if err != nil {
-		return "", fmt.Errorf("Twitch: Error getting stream variants from m3u8 playlist: %v", err)
+		return hls.M3U8StreamVariant{},
+			fmt.Errorf("Twitch: Error getting stream variants from m3u8 playlist: %v", err)
 	}
 
 	// TODO: configuration for quality, sorting by quality, resolution, codec, etc.
-	return streamVariants[0].Url, nil
+	return streamVariants[0], nil
 }

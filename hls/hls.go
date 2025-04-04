@@ -36,6 +36,7 @@ type M3U8MediaPlaylist struct {
 // A segment from a m3u8 media playlist containing a url to a single downloadable video segment.
 type M3U8Segment struct {
 	Url              string
+	Duration         float64 // in seconds
 	MediaSequenceNum int
 
 	// Optional tag(s) that may not be present.
@@ -66,11 +67,23 @@ type Recorder struct {
 	// sequence numbers for each additional segment are found by simply incrementing by 1 for each.
 	// https://datatracker.ietf.org/doc/html/rfc8216#section-6.3.5
 	lastSeenSeqNum int
+
+	// Information about the current recording
+	// Will be updated as the stream is recorded.
+	digest      RecordingDigest
+	digestMutex sync.RWMutex
 }
 
-type RecordingReport struct {
-	BytesWritten      int
-	RecordingDuration int
+type RecordingDigest struct {
+	OutputPath        string
+	RecordingStart    time.Time
+	RecordingDuration float64 // in seconds
+	BytesWritten      int     // bytes written over the entire duration of the recording.
+	BytesPerSecond    int     // calculated over the time of a single TargetDuration (loop iteration) of a recording.
+	AvgBytesPerSecond int     // calculated over the entire duration of the recording.
+	Width             int     // resolution width  (1920)
+	Height            int     // resolution height (1080)
+	FrameRate         float64
 	GracefulEnd       bool // This is true only if the m3u8 playlist delievered the #EXT-X-ENDLIST tag.
 }
 
@@ -189,25 +202,31 @@ func sortStreamVariants(variants []M3U8StreamVariant) {
 }
 
 func NewRecorder(ctx context.Context, identifer string,
-	httpClient *http.Client, url string, outputPath string) *Recorder {
+	httpClient *http.Client, hlsStream M3U8StreamVariant, outputPath string) *Recorder {
 	return &Recorder{
 		ctx:            ctx,
 		identifier:     identifer,
 		httpClient:     httpClient,
-		url:            url,
+		url:            hlsStream.Url,
 		outputPath:     outputPath,
 		lastSeenSeqNum: 0,
+		digest: RecordingDigest{
+			OutputPath: outputPath,
+			Width:      hlsStream.Width,
+			Height:     hlsStream.Height,
+			FrameRate:  hlsStream.FrameRate,
+		},
 	}
 }
 
-func (r *Recorder) Record() (RecordingReport, error) {
-	var report RecordingReport
-
+func (r *Recorder) Record() (RecordingDigest, error) {
 	outFile, err := os.Create(r.outputPath)
 	if err != nil {
-		return report, fmt.Errorf("error creating initial file (%s): %v", r.outputPath, err)
+		return r.digest, fmt.Errorf("error creating initial file (%s): %v", r.outputPath, err)
 	}
 	defer outFile.Close()
+
+	r.digest.RecordingStart = time.Now()
 
 	// Reload the m3u8 media playlist every X seconds designated by the target duration fetched.
 	// Parse the playlist to get important tags and their values
@@ -215,9 +234,10 @@ func (r *Recorder) Record() (RecordingReport, error) {
 	// We will allow a single retry for any failures related to getting or parsing the m3u8 playlist.
 	// If we fail to parse or get the playlist two times in a row we will stop the recording with an error.
 	retry := true
+	iterations := 0
 	for {
 		if r.ctx.Err() != nil {
-			return report, nil
+			return r.digest, nil
 		}
 
 		playlistData, err := GetM3U8PlaylistData(r.httpClient, r.url)
@@ -229,7 +249,7 @@ func (r *Recorder) Record() (RecordingReport, error) {
 				time.Sleep(1 * time.Second) // Arbitrary 1 second sleep in hope that playlist fixes itself.
 				continue
 			}
-			return report, fmt.Errorf("failed to get m3u8 media playlist data: %v", err)
+			return r.digest, fmt.Errorf("failed to get m3u8 media playlist data: %v", err)
 		}
 
 		playlist, err := parseM3U8MediaPlaylist(playlistData)
@@ -241,7 +261,7 @@ func (r *Recorder) Record() (RecordingReport, error) {
 				time.Sleep(1 * time.Second) // Arbitrary 1 second sleep in hope that playlist fixes itself.
 				continue
 			}
-			return report, fmt.Errorf("failed to parse m3u8 media playlist: %v", err)
+			return r.digest, fmt.Errorf("failed to parse m3u8 media playlist: %v", err)
 		}
 
 		// QUESTION: if there is no changes to the media playlist after target duration timed refresh
@@ -287,12 +307,14 @@ func (r *Recorder) Record() (RecordingReport, error) {
 			r.lastSeenSeqNum = newLastSeenSeqNum
 		}
 
-		// Take all the segments media data and combine them into a single unified chunk
+		// Take all of the new segment's media data and combine them into a single unified chunk
 		// This will greatly reduce the amount of times we have to write to the disk.
 		// PERF: would a buffered writer do the same thing and produce better performance?
 		var totalLen int
+		var totalDuration float64
 		for _, s := range playlist.Segments {
 			totalLen += len(s.Data.Bytes)
+			totalDuration += s.Duration
 		}
 		combinedSegments := make([]byte, totalLen)
 		var i int
@@ -300,19 +322,13 @@ func (r *Recorder) Record() (RecordingReport, error) {
 			i += copy(combinedSegments[i:], s.Data.Bytes)
 		}
 
+		bytesWritten := 0
 		if len(combinedSegments) > 0 {
 			n, err := outFile.Write(combinedSegments)
 			if err != nil {
-				return report, fmt.Errorf("Error writing media segment data to file: %v", err)
+				return r.digest, fmt.Errorf("Error writing media segment data to file: %v", err)
 			}
-			report.BytesWritten += n
-		}
-
-		// Check if the stream/playlist has ended
-		// This is set to true if the playlist sent a #EXT-X-ENDLIST tag.
-		if playlist.Ended {
-			report.GracefulEnd = true
-			return report, nil
+			bytesWritten = n
 		}
 
 		// If we made it through a loop with no errors reset the retry flag
@@ -324,9 +340,25 @@ func (r *Recorder) Record() (RecordingReport, error) {
 				r.identifier))
 		}
 
+		iterations++
+
+		r.digestMutex.Lock()
+		r.digest.RecordingDuration += totalDuration
+		r.digest.BytesWritten += bytesWritten
+		r.digest.BytesPerSecond = (bytesWritten / playlist.TargetDuration)
+		r.digest.AvgBytesPerSecond = (r.digest.BytesWritten / int(r.digest.RecordingDuration))
+		r.digest.GracefulEnd = playlist.Ended
+		r.digestMutex.Unlock()
+
+		// Check if the stream/playlist has ended
+		// This is set to true if the playlist sent a #EXT-X-ENDLIST tag.
+		if playlist.Ended {
+			return r.digest, nil
+		}
+
 		select {
 		case <-r.ctx.Done():
-			return report, nil
+			return r.digest, nil
 		case <-ticker.C:
 			continue
 		}
@@ -398,6 +430,14 @@ func (r *Recorder) getSegment(segment M3U8Segment) error {
 	return nil
 }
 
+func (r *Recorder) GetCurrentDigest() RecordingDigest {
+	r.digestMutex.RLock()
+	digestCopy := r.digest
+	r.digestMutex.RUnlock()
+
+	return digestCopy
+}
+
 // Parse a m3u8 media playlist string into an M3U8MediaPlaylist struct
 // A media playlist contains multiple segments, and some metadata for the playlist as a whole.
 // https://datatracker.ietf.org/doc/html/rfc8216
@@ -456,6 +496,10 @@ func parseM3U8MediaPlaylist(playlistData string) (M3U8MediaPlaylist, error) {
 		}
 
 		if strings.HasPrefix(line, "#EXTINF:") {
+			segDurationMatch := regexp.MustCompile(`#EXTINF:([\d\.]+)`).FindStringSubmatch(line)
+			if len(segDurationMatch) >= 2 {
+				segment.Duration, _ = strconv.ParseFloat(segDurationMatch[1], 64)
+			}
 			isUrlNext = true
 			continue
 		}
