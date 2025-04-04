@@ -234,21 +234,73 @@ func monitorPlatform(ctx context.Context, p platform.Platform, cmdMsgChan <-chan
 	// to lock the entire platform struct from use, mainly to be used when updating config.
 	platformMutex := sync.Mutex{}
 
+	// set timer to 1 so that the first loop iteration will start instantly.
+	// reset and wait the platform check interval every time after this.
+	timer := time.NewTimer(1)
+
 loop:
 	for {
-		slog.Debug(fmt.Sprintf("(%s) platform loop iteration...", p.Name()))
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			slog.Info(fmt.Sprintf("(%s) got shutdown signal, stopped monitoring.", p.Name()))
 			break loop
+		case cmdMsg := <-cmdMsgChan:
+			{
+				switch cmdMsg.Type {
+				case CmdConfigReload:
+					{
+						// TODO: maybe put this in a proper function?
+						func() {
+							platformMutex.Lock()
+							defer platformMutex.Unlock()
+
+							cfg, ok := cmdMsg.Value.(Config)
+							if !ok {
+								slog.Error(fmt.Sprintf(
+									"Config-Reload command message sent with a non-config value: %v",
+									cmdMsg.Value))
+								return
+							}
+
+							pCfg, found := cfg.PlatformCfgMap[p.Name()]
+							if !found {
+								// TODO: a previously configured platform has since been deleted from the config,
+								//       what shall we do? for now just ignore but we should probably teardown platform.
+								slog.Info(fmt.Sprintf(
+									"Previously configured platform (%s) has been removed from config.",
+									p.Name()))
+								return
+							}
+
+							applied, err := p.UpdateConfig(pCfg)
+							if err != nil {
+								slog.Error(fmt.Sprintf(
+									"Error updating platform (%s) config: %v",
+									p.Name(), err))
+								return
+							}
+
+							if applied {
+								slog.Info(fmt.Sprintf("(%s) config successfully updated", p.Name()))
+							} else {
+								slog.Info(fmt.Sprintf(
+									"(%s) config successfully updated, but no changes were applied", p.Name()))
+							}
+						}()
+					}
+				}
+			}
+		case <-timer.C:
 		}
 
 		platformMutex.Lock()
-		ticker := time.NewTicker(time.Duration(p.GetCheckInterval()) * time.Second)
+
+		timer.Reset(time.Duration(p.GetCheckInterval()) * time.Second)
 
 		liveStreamers, err := p.GetLiveStreamers()
 		if err != nil {
 			slog.Error(fmt.Sprintf("(%s) failed to get streamers who are live: %v", p.Name(), err))
-			return
+			continue // TODO: do we want to just try forever or should we have a retry limit?
 		}
 
 		recordingMutex.Lock()
@@ -321,59 +373,7 @@ loop:
 		}
 		recordingMutex.Unlock()
 		platformMutex.Unlock()
-
-		select {
-		case <-ctx.Done():
-			break loop
-		case cmdMsg := <-cmdMsgChan:
-			{
-				switch cmdMsg.Type {
-				case CmdConfigReload:
-					{
-						// TODO: maybe put this in a proper function?
-						func() {
-							platformMutex.Lock()
-							defer platformMutex.Unlock()
-
-							cfg, ok := cmdMsg.Value.(Config)
-							if !ok {
-								slog.Error(fmt.Sprintf(
-									"Config-Reload command message sent with a non-config value: %v",
-									cmdMsg.Value))
-								return
-							}
-
-							pCfg, found := cfg.PlatformCfgMap[p.Name()]
-							if !found {
-								// TODO: a previously configured platform has since been deleted from the config,
-								//       what shall we do? for now just ignore but we should probably teardown platform.
-								slog.Info(fmt.Sprintf(
-									"Previously configured platform (%s) has been removed from config.",
-									p.Name()))
-								return
-							}
-
-							applied, err := p.UpdateConfig(pCfg)
-							if err != nil {
-								slog.Error(fmt.Sprintf(
-									"Error updating platform (%s) config: %v",
-									p.Name(), err))
-								return
-							}
-
-							if applied {
-								slog.Info(fmt.Sprintf("(%s) config successfully updated", p.Name()))
-							} else {
-								slog.Info(fmt.Sprintf(
-									"(%s) config successfully updated, but no changes were applied", p.Name()))
-							}
-						}()
-					}
-				}
-			}
-		case <-ticker.C:
-			continue
-		}
+		slog.Debug(fmt.Sprintf("(%s) platform loop iteration...", p.Name()))
 	}
 
 	wg.Wait()
