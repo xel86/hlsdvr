@@ -300,6 +300,7 @@ loop:
 		liveStreamers, err := p.GetLiveStreamers()
 		if err != nil {
 			slog.Error(fmt.Sprintf("(%s) failed to get streamers who are live: %v", p.Name(), err))
+			platformMutex.Unlock()
 			continue // TODO: do we want to just try forever or should we have a retry limit?
 		}
 
