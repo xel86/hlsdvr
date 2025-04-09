@@ -363,7 +363,7 @@ func (t *Platform) GetLiveStreamers() ([]platform.Streamer, error) {
 
 	resp, err := t.api.GetStreams(GetStreamsParams{UserIDs: userIds})
 	if err != nil {
-		return nil, fmt.Errorf("Error calling GetStreams twitch api: %v", err)
+		return nil, fmt.Errorf("error from twitch api: %v", err)
 	}
 
 	for _, stream := range resp.Data {

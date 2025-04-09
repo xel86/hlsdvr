@@ -5,15 +5,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
-	"math"
 	"net/http"
 	"os"
 	"os/signal"
-	"path"
 	"path/filepath"
-	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -21,159 +17,9 @@ import (
 	"github.com/xel86/hlsdvr/hls"
 	"github.com/xel86/hlsdvr/platform"
 	"github.com/xel86/hlsdvr/platform/twitch"
+	"github.com/xel86/hlsdvr/server"
+	"github.com/xel86/hlsdvr/util"
 )
-
-type PlatformCommand int
-
-const (
-	CmdStatus PlatformCommand = iota
-	CmdConfigReload
-)
-
-var platformCommandName = map[PlatformCommand]string{
-	CmdStatus:       "status",
-	CmdConfigReload: "config-reload",
-}
-
-type PlatformCommandMsg struct {
-	Type  PlatformCommand
-	Value any
-}
-
-type PlatformCommandSender struct {
-	platformChans map[string]chan PlatformCommandMsg // platform.Name() key -> channel value
-	mutex         sync.RWMutex
-}
-
-func NewPlatformCommandSender(platforms []platform.Platform) *PlatformCommandSender {
-	chanMap := make(map[string]chan PlatformCommandMsg)
-	for _, p := range platforms {
-		pChan := make(chan PlatformCommandMsg, 5) // arbitrary channel buffer size of 5
-		chanMap[p.Name()] = pChan
-	}
-	return &PlatformCommandSender{
-		platformChans: chanMap,
-		mutex:         sync.RWMutex{},
-	}
-}
-
-func (pcs *PlatformCommandSender) Broadcast(msg PlatformCommandMsg) {
-	pcs.mutex.RLock()
-	defer pcs.mutex.RUnlock()
-
-	for name, ch := range pcs.platformChans {
-		// ensure non-blocking send
-		select {
-		case ch <- msg:
-		default:
-			slog.Warn(fmt.Sprintf(
-				"Tried sending command to platform (%s), but the channel was full. Dropped message: %s",
-				name, platformCommandName[msg.Type]))
-		}
-	}
-}
-
-func (pcs *PlatformCommandSender) BroadcastTo(platformNames []string, msg PlatformCommandMsg) {
-	pcs.mutex.RLock()
-	defer pcs.mutex.RUnlock()
-
-	for name, ch := range pcs.platformChans {
-		if !slices.Contains(platformNames, name) {
-			continue
-		}
-
-		// ensure non-blocking send
-		select {
-		case ch <- msg:
-		default:
-			slog.Warn(fmt.Sprintf(
-				"Tried sending command to platform (%s), but the channel was full. Dropped message: %s",
-				name, platformCommandName[msg.Type]))
-		}
-	}
-}
-
-func (pcs *PlatformCommandSender) RemovePlatform(platformName string) {
-	pcs.mutex.Lock()
-	defer pcs.mutex.Unlock()
-	ch, found := pcs.platformChans[platformName]
-	if !found {
-		slog.Warn(fmt.Sprintf("Tried to remove non-existent platform (%s) from command sender.", platformName))
-		return
-	}
-
-	delete(pcs.platformChans, platformName)
-	close(ch)
-}
-
-func HumanReadableBytes(b int) string {
-	bf := float64(b)
-	for _, unit := range []string{"", "Ki", "Mi", "Gi", "Ti"} {
-		if math.Abs(bf) < 1024.0 {
-			return fmt.Sprintf("%3.1f %sB", bf, unit)
-		}
-		bf /= 1024.0
-	}
-	return fmt.Sprintf("%.1f YiB", bf)
-}
-
-func HumanReadableSeconds(seconds int) string {
-	duration := time.Duration(seconds) * time.Second
-
-	hours := int(duration.Hours())
-	minutes := int(duration.Minutes()) % 60
-	secs := int(duration.Seconds()) % 60
-
-	if hours > 0 {
-		return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, secs)
-	} else {
-		return fmt.Sprintf("%02d:%02d", minutes, secs)
-	}
-}
-
-func DigestInfoString(d hls.RecordingDigest) string {
-	return fmt.Sprintf("[%s]: %s / %s (%dx%d @ %.2f)",
-		path.Base(d.OutputPath),
-		HumanReadableBytes(d.BytesWritten),
-		HumanReadableSeconds(int(d.RecordingDuration)),
-		d.Width, d.Height, d.FrameRate)
-}
-
-func MoveFile(sourcePath string, destDirPath string, destFileName string) error {
-	inputFile, err := os.Open(sourcePath)
-	if err != nil {
-		return fmt.Errorf("Couldn't open source file: %v", err)
-	}
-	defer inputFile.Close()
-
-	if err := os.MkdirAll(destDirPath, 0755); err != nil {
-		return fmt.Errorf("error creating directory %s to move/archive stream(s) into: %v",
-			destDirPath, err)
-	}
-
-	// don't open a file if it already exists.
-	destPath := filepath.Join(destDirPath, destFileName)
-	outputFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
-	if err != nil {
-		return fmt.Errorf("Couldn't create dest file: %v", err)
-	}
-	defer outputFile.Close()
-
-	_, err = io.Copy(outputFile, inputFile)
-	if err != nil {
-		return fmt.Errorf("Couldn't copy to dest from source: %v", err)
-	}
-
-	// for Windows, close before trying to remove: https://stackoverflow.com/a/64943554/246801
-	inputFile.Close()
-
-	err = os.Remove(sourcePath)
-	if err != nil {
-		return fmt.Errorf("Couldn't remove source file: %v", err)
-	}
-
-	return nil
-}
 
 func createPlatformsFromConfigs(cfg Config) ([]platform.Platform, error) {
 	var platforms []platform.Platform
@@ -188,35 +34,7 @@ func createPlatformsFromConfigs(cfg Config) ([]platform.Platform, error) {
 	return platforms, nil
 }
 
-// TODO: probably want two contexts for the future, one for global context and one for streamer specific disabling.
-func downloadHLS(ctx context.Context,
-	hlsStream hls.M3U8StreamVariant,
-	s platform.Streamer, outputPath string) (*hls.RecordingDigest, error) {
-	var returnErr error
-	if err := os.MkdirAll(s.GetOutputDirPath(), 0755); err != nil {
-		return nil, fmt.Errorf("error creating directory %s to download stream into: %v",
-			s.GetOutputDirPath(), err)
-	}
-
-	recorder := hls.NewRecorder(
-		ctx,
-		s.Username(),
-		&http.Client{Timeout: 10 * time.Second},
-		hlsStream,
-		outputPath)
-
-	digest, err := recorder.Record()
-	if err != nil {
-		returnErr = fmt.Errorf("error recording %s hls stream: %v", s.Username(), err)
-		if digest.BytesWritten == 0 {
-			return nil, returnErr
-		}
-	}
-
-	return &digest, nil
-}
-
-func monitorPlatform(ctx context.Context, p platform.Platform, cmdMsgChan <-chan PlatformCommandMsg) {
+func monitorPlatform(ctx context.Context, p platform.Platform, cmdMsgChan <-chan platform.CommandMsg) {
 	sListStr := "[ "
 	for _, s := range p.GetStreamers() {
 		sListStr += (s.Username() + " ")
@@ -228,8 +46,8 @@ func monitorPlatform(ctx context.Context, p platform.Platform, cmdMsgChan <-chan
 	var wg sync.WaitGroup
 
 	// string is from a platform.Streamer's UniqueID().
-	recordingMap := make(map[string]struct{})
-	recordingMutex := sync.Mutex{}
+	recordingMap := make(map[string]*hls.Recorder)
+	recordingMapMutex := sync.Mutex{}
 
 	// to lock the entire platform struct from use, mainly to be used when updating config.
 	platformMutex := sync.Mutex{}
@@ -242,12 +60,12 @@ loop:
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info(fmt.Sprintf("(%s) got shutdown signal, stopped monitoring.", p.Name()))
+			slog.Info(fmt.Sprintf("(%s) got shutdown signal, stopping...", p.Name()))
 			break loop
 		case cmdMsg := <-cmdMsgChan:
 			{
 				switch cmdMsg.Type {
-				case CmdConfigReload:
+				case platform.CmdConfigReload:
 					{
 						// TODO: maybe put this in a proper function?
 						func() {
@@ -288,11 +106,41 @@ loop:
 							}
 						}()
 					}
+				case platform.CmdStatus:
+					{
+						func() {
+							recordingMapMutex.Lock()
+							defer recordingMapMutex.Unlock()
+
+							var digests []hls.RecordingDigest
+							for _, v := range recordingMap {
+								if v != nil {
+									digests = append(digests, v.GetCurrentDigest())
+								}
+							}
+
+							returnMsg := platform.CmdStatusReturn{
+								PlatformName: p.Name(),
+								Digests:      digests,
+							}
+
+							// ensure non-blocking send
+							select {
+							case cmdMsg.ReturnChan <- returnMsg:
+							default:
+								slog.Warn(fmt.Sprintf(
+									"(%s) tried returning status, but the channel was unavailable. Dropped message: %v",
+									p.Name(), returnMsg))
+							}
+						}()
+					}
 				}
+				continue // go back to top waiting for select {} after handling command.
 			}
 		case <-timer.C:
 		}
 
+		// TODO: should we defer an Unlock() to avoid bugs with early exiting/continuing from this loop?
 		platformMutex.Lock()
 
 		timer.Reset(time.Duration(p.GetCheckInterval()) * time.Second)
@@ -304,84 +152,101 @@ loop:
 			continue // TODO: do we want to just try forever or should we have a retry limit?
 		}
 
-		recordingMutex.Lock()
+		recordingMapMutex.Lock()
 		for _, liveStreamer := range liveStreamers {
-			_, found := recordingMap[liveStreamer.UniqueID()]
-			if !found {
-				hls, err := p.GetHLSStream(liveStreamer)
+			_, found := recordingMap[liveStreamer.UniqueID()] // check if already recording live stream
+			if found {
+				continue
+			}
+
+			hlsStream, err := p.GetHLSStream(liveStreamer)
+			if err != nil {
+				slog.Error(
+					fmt.Sprintf("(%s) error getting hls url for %s: %v",
+						p.Name(), liveStreamer.Username(), err))
+				continue
+			}
+
+			if err := os.MkdirAll(liveStreamer.GetOutputDirPath(), 0755); err != nil {
+				slog.Error(fmt.Sprintf("error creating directory %s to download stream into: %v",
+					liveStreamer.GetOutputDirPath(), err))
+				continue
+			}
+
+			// TODO: make the filename template configurable?
+			fileName := fmt.Sprintf("%s-%s.ts", liveStreamer.Username(), time.Now().Format("20060102_150405"))
+			outputPath := filepath.Join(liveStreamer.GetOutputDirPath(), fileName)
+
+			// TODO: probably want a secondary context to stop recording this specific stream,
+			// 	     on top of the global context.
+			recorder := hls.NewRecorder(
+				ctx,
+				liveStreamer.Username(),
+				&http.Client{Timeout: 10 * time.Second},
+				hlsStream,
+				outputPath)
+
+			recordingMap[liveStreamer.UniqueID()] = recorder
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				slog.Info(fmt.Sprintf("(%s) starting to record streamer %s", p.Name(), liveStreamer.Username()))
+
+				digest, err := recorder.Record()
 				if err != nil {
-					slog.Error(
-						fmt.Sprintf("(%s) error getting hls url for %s: %v",
-							p.Name(), liveStreamer.Username(), err))
-					continue
+					slog.Error(fmt.Sprintf(
+						"(%s) error recording %s hls stream: %v", p.Name(), liveStreamer.Username(), err))
 				}
 
-				recordingMap[liveStreamer.UniqueID()] = struct{}{}
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					slog.Info(fmt.Sprintf("(%s) starting to record streamer %s", p.Name(), liveStreamer.Username()))
+				recordingMapMutex.Lock()
+				delete(recordingMap, liveStreamer.UniqueID())
+				recordingMapMutex.Unlock()
 
-					// TODO: make the filename template configurable?
-					fileName := fmt.Sprintf("%s-%s.ts", liveStreamer.Username(), time.Now().Format("20060102_150405"))
-					outputPath := filepath.Join(liveStreamer.GetOutputDirPath(), fileName)
-
-					digest, err := downloadHLS(ctx, hls, liveStreamer, outputPath)
-
-					recordingMutex.Lock()
-					delete(recordingMap, liveStreamer.UniqueID())
-					recordingMutex.Unlock()
-
-					if err != nil {
-						if digest != nil {
-							slog.Error(fmt.Sprintf("(%s) error downloading mid-stream for %s: %v",
-								p.Name(), liveStreamer.Username(), err))
-						} else {
-							slog.Error(fmt.Sprintf("(%s) error starting stream download, no file made for %s: %v",
-								p.Name(), liveStreamer.Username(), err))
-							return
-						}
-					}
-
-					if digest == nil {
-						slog.Warn(fmt.Sprintf("(%s) %s stream download has no digest, and also no error...",
-							p.Name(), liveStreamer.Username()))
+				if err != nil {
+					if digest.BytesWritten != 0 {
+						slog.Error(fmt.Sprintf("(%s) error downloading mid-stream for %s: %v",
+							p.Name(), liveStreamer.Username(), err))
+					} else {
+						slog.Error(fmt.Sprintf("(%s) error starting stream download, no file made for %s: %v",
+							p.Name(), liveStreamer.Username(), err))
 						return
 					}
+				}
 
-					if digest.GracefulEnd {
-						slog.Info(fmt.Sprintf("(%s) %s went offline %s",
-							p.Name(), liveStreamer.Username(), DigestInfoString(*digest)))
+				if digest.GracefulEnd {
+					slog.Info(fmt.Sprintf("(%s) %s went offline %s",
+						p.Name(), liveStreamer.Username(), hls.DigestFileInfoString(digest)))
+				} else {
+					slog.Info(fmt.Sprintf("(%s) recording for %s ended abruptly %s",
+						p.Name(), liveStreamer.Username(), hls.DigestFileInfoString(digest)))
+				}
+
+				// If an archive dir path has been set in the config for either the top, platform, or streamer level,
+				// move the finished downloaded stream file into the archive directory.
+				if liveStreamer.GetArchiveDirPath() != nil {
+					err := util.MoveFile(outputPath, *liveStreamer.GetArchiveDirPath(), fileName)
+					if err != nil {
+						slog.Error(fmt.Sprintf("(%s) error moving recording %s into archive %s",
+							p.Name(), fileName, *liveStreamer.GetArchiveDirPath()))
 					} else {
-						slog.Info(fmt.Sprintf("(%s) recording for %s ended abruptly %s",
-							p.Name(), liveStreamer.Username(), DigestInfoString(*digest)))
+						slog.Info(fmt.Sprintf("(%s) moved recording %s into %s",
+							p.Name(), fileName, *liveStreamer.GetArchiveDirPath()))
 					}
-
-					// If an archive dir path has been set in the config for either the top, platform, or streamer level,
-					// move the finished downloaded stream file into the archive directory.
-					if liveStreamer.GetArchiveDirPath() != nil {
-						err := MoveFile(outputPath, *liveStreamer.GetArchiveDirPath(), fileName)
-						if err != nil {
-							slog.Error(fmt.Sprintf("(%s) error moving recording %s into archive %s",
-								p.Name(), fileName, *liveStreamer.GetArchiveDirPath()))
-						} else {
-							slog.Info(fmt.Sprintf("(%s) moved recording %s into %s",
-								p.Name(), fileName, *liveStreamer.GetArchiveDirPath()))
-						}
-					}
-				}()
-			}
+				}
+			}()
 		}
-		recordingMutex.Unlock()
+
+		recordingMapMutex.Unlock()
 		platformMutex.Unlock()
 		slog.Debug(fmt.Sprintf("(%s) platform loop iteration...", p.Name()))
 	}
 
 	wg.Wait()
-	slog.Info(fmt.Sprintf("(%s) stopped monitoring.", p.Name()))
+	slog.Info(fmt.Sprintf("(%s) gracefully stopped monitoring.", p.Name()))
 }
 
-func monitorConfigFileChanges(ctx context.Context, cfgPath string, pcs *PlatformCommandSender) {
+func monitorConfigFileChanges(ctx context.Context, cfgPath string, pcs *platform.CommandSender) {
 	initial, err := os.Stat(cfgPath)
 	if err != nil {
 		slog.Error(fmt.Sprintf(
@@ -417,8 +282,8 @@ loop:
 							cfgPath, err))
 						continue
 					}
-					pcs.Broadcast(PlatformCommandMsg{Type: CmdConfigReload, Value: cfg})
-					slog.Debug(fmt.Sprintf("Broadcasted CmdConfigReload Message for: %v", pcs.platformChans))
+					pcs.Broadcast(platform.CommandMsg{Type: platform.CmdConfigReload, Value: cfg})
+					slog.Debug("Broadcasted CmdConfigReload Message for all platforms.")
 				}
 			}
 		}
@@ -427,17 +292,29 @@ loop:
 
 func main() {
 	var cfgPath string
+	var socketPath string
+	var noIpc bool
 	var debug bool
 	flag.StringVar(
 		&cfgPath,
 		"config",
 		filepath.Join(GetDefaultConfigDir(), configFileName),
 		"Path to config file to use or create.")
+	flag.StringVar(
+		&socketPath,
+		"socket",
+		"/tmp/hlsdvr.sock", // TODO: a working windows default?
+		"Path to create the unix socket in for IPC server.")
 	flag.BoolVar(
 		&debug,
 		"debug",
 		false,
 		"Enable debug log level for output")
+	flag.BoolVar(
+		&noIpc,
+		"no-ipc",
+		false,
+		"Don't create or listen on a unix socket for ipc commands.")
 
 	flag.Parse()
 
@@ -474,13 +351,23 @@ func main() {
 		return
 	}
 
+	// Override the config socket path if the socket flag was passed in.
+	// If no config value is present, treat it as if the ipc has been disabled.
+	if !util.IsFlagPassed("socket") {
+		if cfg.UnixSocketPath != nil {
+			socketPath = *cfg.UnixSocketPath
+		} else {
+			noIpc = true
+		}
+	}
+
 	platforms, err := createPlatformsFromConfigs(cfg)
 	if err != nil {
 		slog.Error(fmt.Sprintf("Failed to create initial platforms from config: %v", err))
 		return
 	}
 
-	pcs := NewPlatformCommandSender(platforms)
+	pcs := platform.NewCommandSender(platforms)
 	var wg sync.WaitGroup
 
 	// Watch config file for changes
@@ -490,12 +377,20 @@ func main() {
 		monitorConfigFileChanges(ctx, cfgPath, pcs)
 	}()
 
+	if !noIpc {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			server.IpcServer(ctx, pcs, socketPath)
+		}()
+	}
+
 	for _, p := range platforms {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 
-			ch, found := pcs.platformChans[p.Name()]
+			ch, found := pcs.GetPlatformChan(p.Name())
 			if !found {
 				slog.Error(fmt.Sprintf(
 					"Failed to get platform (%s) command channel to start monitoring, skipping platform.",

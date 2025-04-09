@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/xel86/hlsdvr/util"
 )
 
 // Individual streams variants (m3u8 playlists) found in a m3u8 variant playlist
@@ -75,6 +77,8 @@ type Recorder struct {
 }
 
 type RecordingDigest struct {
+	Identifier        string
+	Active            bool
 	OutputPath        string
 	RecordingStart    time.Time
 	RecordingDuration float64 // in seconds
@@ -85,6 +89,14 @@ type RecordingDigest struct {
 	Height            int     // resolution height (1080)
 	FrameRate         float64
 	GracefulEnd       bool // This is true only if the m3u8 playlist delievered the #EXT-X-ENDLIST tag.
+}
+
+func DigestFileInfoString(d RecordingDigest) string {
+	return fmt.Sprintf("[%s]: %s / %s (%dx%d @ %.2f)",
+		path.Base(d.OutputPath),
+		util.HumanReadableBytes(d.BytesWritten),
+		util.HumanReadableSeconds(int(d.RecordingDuration)),
+		d.Width, d.Height, d.FrameRate)
 }
 
 func GetM3U8PlaylistData(httpClient *http.Client, url string) (string, error) {
@@ -226,7 +238,10 @@ func (r *Recorder) Record() (RecordingDigest, error) {
 	}
 	defer outFile.Close()
 
+	r.digest.Identifier = r.identifier
 	r.digest.RecordingStart = time.Now()
+	r.digest.Active = true
+	defer func() { r.digest.Active = false }()
 
 	// Reload the m3u8 media playlist every X seconds designated by the target duration fetched.
 	// Parse the playlist to get important tags and their values
@@ -400,7 +415,7 @@ func (r *Recorder) downloadSegmentsData(segments []M3U8Segment) error {
 	if len(errChan) != 0 {
 		// It is the caller of downloadSegmentsData's responsibility to parse the error messages
 		// out of the indidivual M3U8Segments
-		return fmt.Errorf("Failed to download all segments successfully.")
+		return fmt.Errorf("Failed to download all segments successfully")
 	}
 
 	return nil
