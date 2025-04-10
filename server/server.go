@@ -20,7 +20,7 @@ import (
 // Command is the name of the platform.Command to be performed.
 // Value is the necessary or optional information needed to perform said command.
 // No value may be required for certain commands, such as "status".
-type IpcRequest struct {
+type RpcRequest struct {
 	Command string         `json:"command"`
 	Value   map[string]any `json:"value,omitempty"`
 }
@@ -30,17 +30,17 @@ type IpcRequest struct {
 // If Success is false, there still may be a partial response to be used in Data
 // An error message is populated in Error if Success if false.
 // Data will be filled with various different structs based on the command requested
-// such as IpcCmdStatusData
-type IpcResponse struct {
+// such as RpcCmdStatusData
+type RpcResponse struct {
 	Success bool            `json:"success"`
 	Error   *string         `json:"error,omitempty"`
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 // "twitch" -> [stream1, stream2, stream3], "youtube" -> [stream1]
-type IpcCmdStatusData map[string][]IpcStreamInfoResponse
+type RpcCmdStatusData map[string][]RpcStreamInfoResponse
 
-type IpcStreamInfoResponse struct {
+type RpcStreamInfoResponse struct {
 	Identifier string
 	ViewCount  int
 	Title      string
@@ -48,14 +48,14 @@ type IpcStreamInfoResponse struct {
 	Digest     hls.RecordingDigest
 }
 
-func doIpcCommandStatus(pcs *platform.CommandSender) (IpcCmdStatusData, error) {
+func doRpcCommandStatus(pcs *platform.CommandSender) (RpcCmdStatusData, error) {
 	numPlatforms := pcs.GetNumPlatforms()
 	ch := make(chan any, numPlatforms)
 
 	pcs.Broadcast(platform.CommandMsg{Type: platform.CmdStatus, Value: nil, ReturnChan: ch})
 	timeout := time.After(5 * time.Second)
 
-	data := IpcCmdStatusData{}
+	data := RpcCmdStatusData{}
 	for range numPlatforms {
 		select {
 		case status := <-ch:
@@ -67,7 +67,7 @@ func doIpcCommandStatus(pcs *platform.CommandSender) (IpcCmdStatusData, error) {
 
 			for _, digest := range v.Digests {
 				data[v.PlatformName] = append(data[v.PlatformName],
-					IpcStreamInfoResponse{
+					RpcStreamInfoResponse{
 						Identifier: digest.Identifier,
 						Digest:     digest,
 					})
@@ -80,15 +80,15 @@ func doIpcCommandStatus(pcs *platform.CommandSender) (IpcCmdStatusData, error) {
 	return data, nil
 }
 
-func handleIpcClient(conn net.Conn, pcs *platform.CommandSender) {
+func handleRpcClient(conn net.Conn, pcs *platform.CommandSender) {
 	defer conn.Close()
 
 	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
 
 	for {
-		req := IpcRequest{}
-		resp := IpcResponse{Success: true}
+		req := RpcRequest{}
+		resp := RpcResponse{Success: true}
 		var respData any
 
 		if err := decoder.Decode(&req); err != nil {
@@ -98,11 +98,11 @@ func handleIpcClient(conn net.Conn, pcs *platform.CommandSender) {
 			return
 		}
 
-		slog.Debug(fmt.Sprintf("(server) received ipc server request: %v", req))
+		slog.Debug(fmt.Sprintf("(server) received RPC server request: %v", req))
 		switch req.Command {
 		case "status":
 			{
-				data, err := doIpcCommandStatus(pcs)
+				data, err := doRpcCommandStatus(pcs)
 				if err != nil {
 					errStr := err.Error()
 					slog.Warn(fmt.Sprintf("(server) %s", errStr))
@@ -112,7 +112,7 @@ func handleIpcClient(conn net.Conn, pcs *platform.CommandSender) {
 				respData = data
 			}
 		default:
-			slog.Warn(fmt.Sprintf("(server) received unknown ipc command: %s", req.Command))
+			slog.Warn(fmt.Sprintf("(server) received unknown RPC command: %s", req.Command))
 			return
 		}
 
@@ -125,13 +125,13 @@ func handleIpcClient(conn net.Conn, pcs *platform.CommandSender) {
 		resp.Data = rawData
 
 		if err := encoder.Encode(resp); err != nil {
-			slog.Error(fmt.Sprintf("(server) failed to respond to ipc client: %v", err))
+			slog.Error(fmt.Sprintf("(server) failed to respond to RPC client: %v", err))
 			return
 		}
 	}
 }
 
-func IpcServer(ctx context.Context, pcs *platform.CommandSender, socketPath string) error {
+func RpcServer(ctx context.Context, pcs *platform.CommandSender, socketPath string) error {
 	if _, err := os.Stat(socketPath); err == nil {
 		if err := os.Remove(socketPath); err != nil {
 			return fmt.Errorf("Failed to remove old existing socket file: %v", err)
@@ -148,7 +148,7 @@ func IpcServer(ctx context.Context, pcs *platform.CommandSender, socketPath stri
 		return fmt.Errorf("Failed to set socket permissions 0666: %v", err)
 	}
 
-	slog.Info(fmt.Sprintf("Started IPC server, created and listening on unix socket %s", socketPath))
+	slog.Info(fmt.Sprintf("Started RPC server, created and listening on unix socket %s", socketPath))
 
 	// This function will wait for any signals to shutdown and trigger the listener
 	// to close so it doesn't block forever.
@@ -175,7 +175,7 @@ func IpcServer(ctx context.Context, pcs *platform.CommandSender, socketPath stri
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			handleIpcClient(conn, pcs)
+			handleRpcClient(conn, pcs)
 		}()
 	}
 	wg.Wait()

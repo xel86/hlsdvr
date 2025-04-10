@@ -51,8 +51,8 @@ type Platform interface {
 }
 
 // Commands that will be sent from a CommandSender to platforms.
-// These are distinct from our IPC server commands, although the vast majority
-// of commands will overlap/have their own ipc version.
+// These are distinct from our RPC server commands, although the vast majority
+// of commands will overlap/have their own RPC version.
 type CommandType int
 
 const (

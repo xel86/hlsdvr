@@ -182,7 +182,7 @@ loop:
 			recorder := hls.NewRecorder(
 				ctx,
 				liveStreamer.Username(),
-				&http.Client{Timeout: 10 * time.Second},
+				&http.Client{Timeout: 5 * time.Second},
 				hlsStream,
 				outputPath)
 
@@ -293,7 +293,7 @@ loop:
 func main() {
 	var cfgPath string
 	var socketPath string
-	var noIpc bool
+	var noRpc bool
 	var debug bool
 	flag.StringVar(
 		&cfgPath,
@@ -304,17 +304,17 @@ func main() {
 		&socketPath,
 		"socket",
 		"/tmp/hlsdvr.sock", // TODO: a working windows default?
-		"Path to create the unix socket in for IPC server.")
+		"Path to create the unix socket in for RPC server.")
 	flag.BoolVar(
 		&debug,
 		"debug",
 		false,
 		"Enable debug log level for output")
 	flag.BoolVar(
-		&noIpc,
-		"no-ipc",
+		&noRpc,
+		"no-rpc",
 		false,
-		"Don't create or listen on a unix socket for ipc commands.")
+		"Don't create or listen on a unix socket for RPC commands.")
 
 	flag.Parse()
 
@@ -352,12 +352,12 @@ func main() {
 	}
 
 	// Override the config socket path if the socket flag was passed in.
-	// If no config value is present, treat it as if the ipc has been disabled.
+	// If no config value is present, treat it as if RPC has been disabled.
 	if !util.IsFlagPassed("socket") {
 		if cfg.UnixSocketPath != nil {
 			socketPath = *cfg.UnixSocketPath
 		} else {
-			noIpc = true
+			noRpc = true
 		}
 	}
 
@@ -377,11 +377,11 @@ func main() {
 		monitorConfigFileChanges(ctx, cfgPath, pcs)
 	}()
 
-	if !noIpc {
+	if !noRpc {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			server.IpcServer(ctx, pcs, socketPath)
+			server.RpcServer(ctx, pcs, socketPath)
 		}()
 	}
 
