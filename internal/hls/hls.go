@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xel86/hlsdvr/util"
+	"github.com/xel86/hlsdvr/internal/util"
 )
 
 // Individual streams variants (m3u8 playlists) found in a m3u8 variant playlist

@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xel86/hlsdvr/hls"
-	"github.com/xel86/hlsdvr/platform"
+	"github.com/xel86/hlsdvr/internal/hls"
+	"github.com/xel86/hlsdvr/internal/platform"
 )
 
 // Json request that will be sent to this server from clients.

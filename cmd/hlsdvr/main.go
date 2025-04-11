@@ -14,11 +14,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/xel86/hlsdvr/hls"
-	"github.com/xel86/hlsdvr/platform"
-	"github.com/xel86/hlsdvr/platform/twitch"
-	"github.com/xel86/hlsdvr/server"
-	"github.com/xel86/hlsdvr/util"
+	"github.com/xel86/hlsdvr/internal/hls"
+	"github.com/xel86/hlsdvr/internal/platform"
+	"github.com/xel86/hlsdvr/internal/platform/twitch"
+	"github.com/xel86/hlsdvr/internal/server"
+	"github.com/xel86/hlsdvr/internal/util"
 )
 
 func createPlatformsFromConfigs(cfg Config) ([]platform.Platform, error) {

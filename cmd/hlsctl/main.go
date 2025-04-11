@@ -10,8 +10,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/xel86/hlsdvr/server"
-	"github.com/xel86/hlsdvr/util"
+	"github.com/xel86/hlsdvr/internal/server"
+	"github.com/xel86/hlsdvr/internal/util"
 )
 
 // Global flags

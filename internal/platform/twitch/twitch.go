@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xel86/hlsdvr/hls"
-	"github.com/xel86/hlsdvr/platform"
+	"github.com/xel86/hlsdvr/internal/hls"
+	"github.com/xel86/hlsdvr/internal/platform"
 )
 
 type Streamer struct {

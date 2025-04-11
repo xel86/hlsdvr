@@ -6,7 +6,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/xel86/hlsdvr/hls"
+	"github.com/xel86/hlsdvr/internal/hls"
 )
 
 // Uniform names that we should use across code base for a platform.

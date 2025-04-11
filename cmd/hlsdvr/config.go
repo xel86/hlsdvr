@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/xel86/hlsdvr/platform"
-	"github.com/xel86/hlsdvr/platform/twitch"
+	"github.com/xel86/hlsdvr/internal/platform"
+	"github.com/xel86/hlsdvr/internal/platform/twitch"
 )
 
 const (
