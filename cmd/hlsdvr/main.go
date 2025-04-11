@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -294,7 +295,9 @@ func main() {
 	var cfgPath string
 	var socketPath string
 	var noRpc bool
-	var debug bool
+	var logDebug bool
+	var showVersion bool
+	var showHelp bool
 	flag.StringVar(
 		&cfgPath,
 		"config",
@@ -306,7 +309,7 @@ func main() {
 		"/tmp/hlsdvr.sock", // TODO: a working windows default?
 		"Path to create the unix socket in for RPC server.")
 	flag.BoolVar(
-		&debug,
+		&logDebug,
 		"debug",
 		false,
 		"Enable debug log level for output")
@@ -315,16 +318,37 @@ func main() {
 		"no-rpc",
 		false,
 		"Don't create or listen on a unix socket for RPC commands.")
+	flag.BoolVar(&showHelp, "help", false, "Show help message")
+	flag.BoolVar(&showHelp, "h", false, "Show help message (shorthand)")
+	flag.BoolVar(&showVersion, "version", false, "Show build version")
+	flag.BoolVar(&showVersion, "v", false, "Show build version (shorthand)")
 
 	flag.Parse()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	if showHelp {
+		fmt.Println("Usage: hlsdvr [options]")
+		fmt.Println("\nOptions:")
+		flag.PrintDefaults()
+		return
+	}
+
+	if showVersion {
+		build, ok := debug.ReadBuildInfo()
+		if ok {
+			fmt.Printf("hlsdvr: %v\n", build.Main.Version)
+		} else {
+			fmt.Printf("hlsdvr: v1\n")
+		}
+		return
+	}
 
 	// Default is slog.LevelInfo
-	if debug {
+	if logDebug {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

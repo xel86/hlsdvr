@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"runtime/debug"
 	"text/tabwriter"
 	"time"
 
@@ -22,17 +23,30 @@ var (
 
 func main() {
 	var showHelp bool
+	var showVersion bool
 
 	// top-level flags
 	flag.StringVar(&socketPath, "socket", "/tmp/hlsdvr.sock", "Path to the unix socket hlsdvr is currently using")
 	flag.BoolVar(&showHelp, "help", false, "Show help message")
 	flag.BoolVar(&showHelp, "h", false, "Show help message (shorthand)")
+	flag.BoolVar(&showVersion, "version", false, "Show build version")
+	flag.BoolVar(&showVersion, "v", false, "Show build version (shorthand)")
 
 	// Parse only the global flags without consuming the command
 	flag.CommandLine.Parse(os.Args[1:])
 
 	if showHelp {
 		printHelp()
+		return
+	}
+
+	if showVersion {
+		build, ok := debug.ReadBuildInfo()
+		if ok {
+			fmt.Printf("hlsctl: %v\n", build.Main.Version)
+		} else {
+			fmt.Printf("hlsctl: v1\n")
+		}
 		return
 	}
 

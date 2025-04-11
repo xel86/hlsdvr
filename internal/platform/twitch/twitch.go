@@ -118,7 +118,7 @@ func NewPlatform(cfg Config) (*Platform, error) {
 
 	valid, err := t.setupValidatedStreamers(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract and validate streamer(s) from config:", err)
+		return nil, fmt.Errorf("failed to extract and validate streamer(s) from config: %v", err)
 	}
 
 	t.streamers = valid.Streamers
