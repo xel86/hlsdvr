@@ -405,7 +405,10 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			server.RpcServer(ctx, pcs, socketPath)
+			err := server.RpcServer(ctx, pcs, socketPath)
+			if err != nil {
+				slog.Warn(fmt.Sprintf("RPC Server didn't gracefully exit: %v", err))
+			}
 		}()
 	}
 

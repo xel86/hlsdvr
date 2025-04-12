@@ -179,6 +179,6 @@ func RpcServer(ctx context.Context, pcs *platform.CommandSender, socketPath stri
 		}()
 	}
 	wg.Wait()
-
+	slog.Info("(server) RPC server shutdown.")
 	return listenerError
 }
