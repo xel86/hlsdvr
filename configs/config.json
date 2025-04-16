@@ -1,6 +1,5 @@
 {
   "output_dir_path": "/home/user/hlsdvr",
-  "unix_socket_path": "/tmp/hlsdvr.sock",
   "twitch": {
     "client_id": "",
     "client_secret": "",
