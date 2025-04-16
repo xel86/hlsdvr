@@ -41,15 +41,43 @@ type RpcResponse struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
-// "twitch" -> [stream1, stream2, stream3], "youtube" -> [stream1]
+// "twitch" -> data, "youtube" -> data
 type RpcCmdStatusData map[string][]RpcStreamInfoResponse
+type RpcCmdStatsData map[string]platform.HistoricalStats
 
+// TODO: should this be not in server.go and be a struct used elsewhere for other functions?
 type RpcStreamInfoResponse struct {
 	Identifier string
 	ViewCount  int
 	Title      string
 	Category   string
 	Digest     hls.RecordingDigest
+}
+
+func doRpcCommandStats(pcs *platform.CommandSender) (RpcCmdStatsData, error) {
+	numPlatforms := pcs.GetNumPlatforms()
+	ch := make(chan any, numPlatforms)
+
+	pcs.Broadcast(platform.CommandMsg{Type: platform.CmdStats, Value: nil, ReturnChan: ch})
+	timeout := time.After(5 * time.Second)
+
+	data := RpcCmdStatsData{}
+	for range numPlatforms {
+		select {
+		case status := <-ch:
+			v, ok := status.(platform.CmdStatsReturn)
+			if !ok {
+				slog.Error(fmt.Sprintf(
+					"(server) received incorrect response from platform for stats command: %v", status))
+			}
+
+			data[v.PlatformName] = v.Stats
+		case <-timeout:
+			return data, fmt.Errorf("timed out waiting for platform(s) to return stats information")
+		}
+	}
+
+	return data, nil
 }
 
 func doRpcCommandStatus(pcs *platform.CommandSender) (RpcCmdStatusData, error) {
@@ -107,6 +135,17 @@ func handleRpcClient(conn net.Conn, pcs *platform.CommandSender) {
 		case "status":
 			{
 				data, err := doRpcCommandStatus(pcs)
+				if err != nil {
+					errStr := err.Error()
+					slog.Warn(fmt.Sprintf("(server) %s", errStr))
+					resp.Success = false
+					resp.Error = &errStr
+				}
+				respData = data
+			}
+		case "stats":
+			{
+				data, err := doRpcCommandStats(pcs)
 				if err != nil {
 					errStr := err.Error()
 					slog.Warn(fmt.Sprintf("(server) %s", errStr))

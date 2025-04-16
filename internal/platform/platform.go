@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/xel86/hlsdvr/internal/hls"
 )
@@ -50,6 +51,16 @@ type Platform interface {
 	GetHLSStream(s Streamer) (hls.M3U8StreamVariant, error)
 }
 
+// Historical stats for a platform being monitored.
+// Variables such as BytesWritten are totals, summed incrementally from each additional recording.
+type HistoricalStats struct {
+	BytesWritten      int                   // Total bytes written to disk across all recordings.
+	AvgBytesPerSecond int                   // Total average bytes per second over runtime of platform.
+	Recordings        int                   // Total number of live streams recorded.
+	FinishedDigests   []hls.RecordingDigest // All hls digests from completed streams.
+	StartTime         time.Time             // Time when the platform began monitoring.
+}
+
 // Commands that will be sent from a CommandSender to platforms.
 // These are distinct from our RPC server commands, although the vast majority
 // of commands will overlap/have their own RPC version.
@@ -58,16 +69,23 @@ type CommandType int
 const (
 	CmdStatus CommandType = iota
 	CmdConfigReload
+	CmdStats
 )
 
 var CommandNameMap = map[CommandType]string{
 	CmdStatus:       "status",
 	CmdConfigReload: "config-reload",
+	CmdStats:        "stats",
 }
 
 type CmdStatusReturn struct {
 	PlatformName string
 	Digests      []hls.RecordingDigest
+}
+
+type CmdStatsReturn struct {
+	PlatformName string
+	Stats        HistoricalStats
 }
 
 // If a command can take parameters to specify operations, it will be put in Value.

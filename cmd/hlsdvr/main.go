@@ -50,6 +50,9 @@ func monitorPlatform(ctx context.Context, p platform.Platform, cmdMsgChan <-chan
 	recordingMap := make(map[string]*hls.Recorder)
 	recordingMapMutex := sync.Mutex{}
 
+	stats := platform.HistoricalStats{StartTime: time.Now()}
+	statsMutex := sync.RWMutex{}
+
 	// to lock the entire platform struct from use, mainly to be used when updating config.
 	platformMutex := sync.Mutex{}
 
@@ -131,6 +134,28 @@ loop:
 							default:
 								slog.Warn(fmt.Sprintf(
 									"(%s) tried returning status, but the channel was unavailable. Dropped message: %v",
+									p.Name(), returnMsg))
+							}
+						}()
+					}
+				case platform.CmdStats:
+					{
+						// TODO: would it be worthwhile/efficient/cleaner to just have stats be returned by CmdStatus?
+						func() {
+							statsMutex.RLock()
+							defer statsMutex.RUnlock()
+
+							returnMsg := platform.CmdStatsReturn{
+								PlatformName: p.Name(),
+								Stats:        stats,
+							}
+
+							// ensure non-blocking send
+							select {
+							case cmdMsg.ReturnChan <- returnMsg:
+							default:
+								slog.Warn(fmt.Sprintf(
+									"(%s) tried returning stats, but the channel was unavailable. Dropped message: %v",
 									p.Name(), returnMsg))
 							}
 						}()
@@ -222,6 +247,12 @@ loop:
 					slog.Info(fmt.Sprintf("(%s) recording for %s ended abruptly %s",
 						p.Name(), liveStreamer.Username(), hls.DigestFileInfoString(digest)))
 				}
+
+				statsMutex.Lock()
+				stats.BytesWritten += digest.BytesWritten
+				stats.Recordings += 1
+				stats.FinishedDigests = append(stats.FinishedDigests, digest)
+				statsMutex.Unlock()
 
 				// If an archive dir path has been set in the config for either the top, platform, or streamer level,
 				// move the finished downloaded stream file into the archive directory.

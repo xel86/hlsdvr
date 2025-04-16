@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/xel86/hlsdvr/internal/hls"
 	"github.com/xel86/hlsdvr/internal/server"
 	"github.com/xel86/hlsdvr/internal/util"
 )
@@ -68,6 +69,8 @@ func main() {
 	switch command {
 	case "status":
 		handleStatus(args[1:])
+	case "stats":
+		handleStats(args[1:])
 	case "help":
 		printHelp()
 	default:
@@ -83,12 +86,154 @@ func printHelp() {
 	flag.PrintDefaults()
 	fmt.Println("\nCommands:")
 	fmt.Println("  status        Show currently recording streams and stats")
+	fmt.Println("  stats         Show historical stats for all platforms and streamers")
 	fmt.Println("\nCommand options:")
-	fmt.Println("  -verbose      Show detailed information")
 	fmt.Println("  -h, --help    Show help for a specific command")
 	fmt.Println("\nExamples:")
 	fmt.Println("  hlsctl -socket /tmp/custom.sock status")
-	fmt.Println("  hlsctl status -verbose")
+	fmt.Println("  hlsctl status -h")
+}
+
+func handleStats(args []string) {
+	// Create a new FlagSet for the stats command
+	var tail int
+
+	statsCmd := flag.NewFlagSet("stats", flag.ExitOnError)
+	list := statsCmd.Bool("list", false, "Print a list of all the individual streams recorded.")
+	statsHelp := statsCmd.Bool("help", false, "Show help for stats command")
+	statsHelpS := statsCmd.Bool("h", false, "Show help for stats command (shorthand)")
+	statsCmd.IntVar(&tail,
+		"tail",
+		0,
+		"Only list this amount of streams recorded for each streamer. (0 = all)")
+
+	// Parse the flags for only this command
+	statsCmd.Parse(args)
+
+	if *statsHelp || *statsHelpS {
+		fmt.Println("Usage: hlsctl stats")
+		fmt.Println("\nOptions:")
+		statsCmd.PrintDefaults()
+		return
+	}
+
+	commandMsg := server.RpcRequest{Command: "stats"}
+
+	response, err := exchangeRpc(socketPath, defaultTimeout, commandMsg)
+	if err != nil {
+		fmt.Printf("Error communicating with hlsdvr RPC server: %v\n", err)
+		os.Exit(1)
+	}
+
+	if response == nil {
+		fmt.Println("No response received from hlsdvr RPC server")
+		return
+	}
+
+	if !response.Success {
+		if response.Error != nil {
+			fmt.Printf("Failed to do stats command: %v\n", response.Error)
+		}
+		fmt.Println("Failed to do stats command")
+	}
+
+	if response.Data != nil {
+		statsData := server.RpcCmdStatsData{}
+
+		// Unmarshal the generic json.RawMessage into the command specific data struct.
+		err := json.Unmarshal(response.Data, &statsData)
+		if err != nil {
+			fmt.Printf("error unmarshalling stats command response data from hlsdvr RPC server: %v\n", err)
+		}
+
+		if len(statsData) == 0 {
+			fmt.Println("No stats available for any platforms (are any platforms being monitored?)")
+		}
+
+		for platformName, v := range statsData {
+			var bytesWrittenPlatform int
+			var totalDurationPlatform float64
+			var avgBytesPerStreamPlatform int
+			var avgBytesPerSecondPlatform int
+			var numRecordingsPlatform int
+			fmt.Printf("%s:\n", platformName)
+
+			if v.BytesWritten == 0 || v.Recordings == 0 {
+				fmt.Println(" No recordings made.")
+				continue
+			}
+
+			// Group all the digests into digests per streamer (identifer)
+			groupedDigests := make(map[string][]hls.RecordingDigest)
+			for _, digest := range v.FinishedDigests {
+				identifer := digest.Identifier
+				groupedDigests[identifer] = append(groupedDigests[identifer], digest)
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
+
+			for identifer, digests := range groupedDigests {
+				// Sum values per streamer (identifer)
+				var bytesWritten int
+				var totalDuration float64
+				var avgBytesPerStream int
+				var avgBytesPerSecond int
+				numRecordings := len(digests)
+
+				for _, digest := range digests {
+					bytesWritten += digest.BytesWritten
+					totalDuration += digest.RecordingDuration
+				}
+				avgBytesPerSecond = (bytesWritten / int(totalDuration))
+				avgBytesPerStream = (bytesWritten / numRecordings)
+
+				fmt.Fprintf(w, "  %s:\t(total: %s / recordings: %d) ~[%s/stream | %s/sec]\n",
+					identifer,
+					util.HumanReadableBytes(bytesWritten),
+					numRecordings,
+					util.HumanReadableBytes(avgBytesPerStream),
+					util.HumanReadableBytes(avgBytesPerSecond))
+
+				if *list {
+					dLen := len(digests)
+
+					// Only print the last N tail elements from digests array
+					// If tail is 0 print the whole array.
+					startIndex := 0
+					if (tail != 0) && (tail < dLen) {
+						startIndex = dLen - (tail)
+					}
+
+					for i := startIndex; i < dLen; i++ {
+						fmt.Fprintf(w, "\t%d: [%s]:\t%s / %s (%dx%d @ %.2f)\n",
+							i+1,
+							path.Base(digests[i].OutputPath),
+							util.HumanReadableBytes(digests[i].BytesWritten),
+							util.HumanReadableSeconds(int(digests[i].RecordingDuration)),
+							digests[i].Width, digests[i].Height, digests[i].FrameRate)
+					}
+					fmt.Fprintf(w, "\t\t\n")
+				}
+
+				// Update platform totals
+				bytesWrittenPlatform += bytesWritten
+				totalDurationPlatform += totalDuration
+				numRecordingsPlatform += numRecordings
+			}
+
+			avgBytesPerSecondPlatform = (bytesWrittenPlatform / int(totalDurationPlatform))
+			avgBytesPerStreamPlatform = (bytesWrittenPlatform / numRecordingsPlatform)
+			fmt.Fprintf(w, "%s:\t(total: %s / recordings: %d) ~[%s/stream | %s/sec]\n\n",
+				platformName,
+				util.HumanReadableBytes(bytesWrittenPlatform),
+				numRecordingsPlatform,
+				util.HumanReadableBytes(avgBytesPerStreamPlatform),
+				util.HumanReadableBytes(avgBytesPerSecondPlatform))
+			w.Flush()
+		} // end platform stats extraction/print loop
+	} else {
+		fmt.Println("No stats data received.")
+	}
 }
 
 func handleStatus(args []string) {
@@ -141,7 +286,7 @@ func handleStatus(args []string) {
 			fmt.Println("No streams are live/being recorded.")
 		}
 
-		for k, v := range statusData {
+		for platformName, v := range statusData {
 			totalBytesPerSecond := 0
 			if *verbose {
 				for _, stream := range v { // we're iterating this twice but its cleaner than the alternative
@@ -149,10 +294,10 @@ func handleStatus(args []string) {
 				}
 
 				fmt.Printf("%s (%s/s):\n\n",
-					k,
+					platformName,
 					util.HumanReadableBytes(totalBytesPerSecond))
 			} else {
-				fmt.Printf("%s:\n", k)
+				fmt.Printf("%s:\n", platformName)
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
