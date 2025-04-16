@@ -26,7 +26,11 @@ func main() {
 	var showVersion bool
 
 	// top-level flags
-	flag.StringVar(&socketPath, "socket", "/tmp/hlsdvr.sock", "Path to the unix socket hlsdvr is currently using")
+	flag.StringVar(
+		&socketPath,
+		"socket",
+		util.GetDefaultSocketPath(server.SocketFileName),
+		"Path to the unix socket hlsdvr is currently using")
 	flag.BoolVar(&showHelp, "help", false, "Show help message")
 	flag.BoolVar(&showHelp, "h", false, "Show help message (shorthand)")
 	flag.BoolVar(&showVersion, "version", false, "Show build version")
@@ -131,6 +135,10 @@ func handleStatus(args []string) {
 		err := json.Unmarshal(response.Data, &statusData)
 		if err != nil {
 			fmt.Printf("error unmarshalling status command response data from hlsdvr RPC server: %v\n", err)
+		}
+
+		if len(statusData) == 0 {
+			fmt.Println("No streams are live/being recorded.")
 		}
 
 		for k, v := range statusData {

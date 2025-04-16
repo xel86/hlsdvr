@@ -301,12 +301,12 @@ func main() {
 	flag.StringVar(
 		&cfgPath,
 		"config",
-		filepath.Join(GetDefaultConfigDir(), configFileName),
+		filepath.Join(util.GetDefaultConfigDir(configDirName), configFileName),
 		"Path to config file to use or create.")
 	flag.StringVar(
 		&socketPath,
 		"socket",
-		"/tmp/hlsdvr.sock", // TODO: a working windows default?
+		util.GetDefaultSocketPath(server.SocketFileName),
 		"Path to create the unix socket in for RPC server.")
 	flag.BoolVar(
 		&logDebug,
@@ -376,12 +376,9 @@ func main() {
 	}
 
 	// Override the config socket path if the socket flag was passed in.
-	// If no config value is present, treat it as if RPC has been disabled.
 	if !util.IsFlagPassed("socket") {
 		if cfg.UnixSocketPath != nil {
 			socketPath = *cfg.UnixSocketPath
-		} else {
-			noRpc = true
 		}
 	}
 
@@ -410,6 +407,8 @@ func main() {
 				slog.Warn(fmt.Sprintf("RPC Server didn't gracefully exit: %v", err))
 			}
 		}()
+	} else {
+		slog.Info("Not starting RPC server due to -no-rpc flag.")
 	}
 
 	for _, p := range platforms {

@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/xel86/hlsdvr/internal/platform"
 	"github.com/xel86/hlsdvr/internal/platform/twitch"
@@ -71,56 +70,6 @@ func ReadConfig(path string) (Config, error) {
 
 	cfg.Path = path
 	return cfg, nil
-}
-
-// returns the platform-specific default configuration directory
-func GetDefaultConfigDir() string {
-	var configDir string
-
-	switch runtime.GOOS {
-	case "windows":
-		configDir = os.Getenv("APPDATA")
-		if configDir == "" {
-			userProfile := os.Getenv("USERPROFILE")
-			if userProfile != "" {
-				configDir = filepath.Join(userProfile, "AppData", "Roaming")
-			} else {
-				// Just put it in the current working directory as last resort
-				configDir = ""
-			}
-		}
-		configDir = filepath.Join(configDir, configDirName)
-
-	case "darwin": // macOS
-		configDir = os.Getenv("XDG_CONFIG_HOME")
-		if configDir == "" {
-			// Standard macOS location: ~/Library/Application Support/
-			home := os.Getenv("HOME")
-			if home == "" {
-				// Just put it in the current working directory as last resort
-				configDir = ""
-			} else {
-				configDir = filepath.Join(home, "Library", "Application Support")
-			}
-		}
-		configDir = filepath.Join(configDir, configDirName)
-
-	default: // Linux and others following XDG spec
-		configDir = os.Getenv("XDG_CONFIG_HOME")
-		if configDir == "" {
-			// Standard XDG fallback: ~/.config/
-			home := os.Getenv("HOME")
-			if home == "" {
-				// Just put it in the current working directory as last resort
-				configDir = ""
-			} else {
-				configDir = filepath.Join(home, ".config")
-			}
-		}
-		configDir = filepath.Join(configDir, configDirName)
-	}
-
-	return configDir
 }
 
 func GenerateDefaultExampleConfig(cfgPath string) error {

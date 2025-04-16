@@ -16,6 +16,10 @@ import (
 	"github.com/xel86/hlsdvr/internal/platform"
 )
 
+const (
+	SocketFileName = "hlsdvr.sock"
+)
+
 // Json request that will be sent to this server from clients.
 // Command is the name of the platform.Command to be performed.
 // Value is the necessary or optional information needed to perform said command.
