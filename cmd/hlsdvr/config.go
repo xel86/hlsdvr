@@ -19,7 +19,7 @@ const (
 type Config struct {
 	OutputDirPath  string         `json:"output_dir_path"`
 	ArchiveDirPath *string        `json:"archive_dir_path,omitempty"`
-	UnixSocketPath *string        `json:"unix_socket_path"`
+	UnixSocketPath *string        `json:"unix_socket_path,omitempty"`
 	TwitchConfig   *twitch.Config `json:"twitch"`
 
 	// Path to this config file.
@@ -76,10 +76,8 @@ func GenerateDefaultExampleConfig(cfgPath string) error {
 	// All streamers example configs are disabled by default (Enabled = false)
 	exampleStreamerOutputDir := "relative/streams-tmp/username"
 	exampleStreamerArchiveDir := "/absolute/other-drive/streams/username"
-	exampleUnixSocketPath := "/tmp/hlsdvr.sock" // TODO: windows friendly default location?
 	cfg := Config{
-		OutputDirPath:  "/home/user/hlsdvr",
-		UnixSocketPath: &exampleUnixSocketPath,
+		OutputDirPath: "/home/user/hlsdvr",
 		TwitchConfig: &twitch.Config{
 			ClientID:          "",
 			ClientSecret:      "",
