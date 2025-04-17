@@ -126,7 +126,7 @@ Deeper levels inherit from higher levels if they do not set a value.
 
 ### Configuration Reference
 
-Check the `examples/` folder in the project repository for various config file examples.
+Check the `configs/` folder in the project repository for various config file examples.
 
 #### Global Options
 
