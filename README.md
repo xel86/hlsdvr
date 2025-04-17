@@ -1,49 +1,180 @@
+# hlsdvr
 
-# hlsdvr (WIP)
-Daemon for recording HLS streams as they go live, such as twitch. Requires no third party dependencies or external programs to run. Written in a modular fashion that will enable adding additional platform support quickly.
+> A lightweight daemon for recording HLS streams as they go live, with no external dependencies.
 
-Perfect for creators who wish to archive their own streams, or official editors who want to work on the raw video files immediately after a stream has ended, so they can upload content faster than ever!
+**hlsdvr** captures live HLS streams from supported platforms like Twitch, designed with a modular architecture for easy addition of new streaming platforms. Perfect for creators archiving their own content or editors who need immediate access to raw footage after a stream ends.
 
-Currently Supported Platforms:
+This is a work-in-progress. New features are being added rapidly, and testing has mainly been done with a twitch user_token with turbo provided, for ad-less streams. Twitch streams with ads (not source) are currently written directly as received without any editing or remuxing, which may result in unexpected ad cuts in the output video.
+
+## Features
+
+- **No external dependencies** - Built entirely in Go with zero third-party requirements
+- **Cross-platform** - Works anywhere Go works (Linux, macOS, Windows, etc.)
+- **Live monitoring** - Automatically detects when streams go live
+- **Modular design** - Easy to extend with support for additional platforms
+- **Runtime configuration** - Edit settings (adding streamers, etc) without restarting the daemon
+- **Archive finished recordings** - Record to one location and move the file to another once completed
+- **Control & Inspect with RPC** - Use the controller binary **hlsctl** to monitor and control the daemon.
+
+## Currently Supported Platforms
+
 - Twitch
+
+## Installation
+
+### Prerequisites
+
+- Latest Golang release: [https://go.dev/doc/install](https://go.dev/doc/install)
+
+### Build from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/xel86/hlsdvr.git
+
+# Build the application
+cd hlsdvr
+go build ./cmd/hlsdvr
+go build ./cmd/hlsctl
+
+# The executable will be available at ./hlsdvr and ./hlsctl
+```
 
 ## Usage
 
-After editing the default configuration file generated or that you grabbed from the ```examples/``` folder, simply run the ```hlsdvr``` binary.
+The project consists of two binaries:
+- `hlsdvr` - The main daemon that monitors and records streams
+- `hlsctl` - Control utility to interact with the running daemon
 
-### Flags/Arguments<br>
-```-config <path-to-config>``` path to a configuration file to use instead of the default path(s)<br>
-```-debug``` flag that enables debug log level<br>
+### hlsdvr (Daemon)
 
-### Configuration
+After setting up your configuration file, simply run the `hlsdvr` binary:
 
-The config file (config.json) will by default be found, and created if necessary, in these default directories:<br>
-```~/.config/hlsdvr/config.json``` on Linux<br>
-```/AppData/Roaming/hlsdvr/config.json``` on Windows<br>
-```/Library/Application Support/hlsdvr/config.json``` on macOS<br>
+```bash
+# Run with default configuration path
+./hlsdvr
 
-A default configuration will be made in the default directory if there isn't one present, you can then edit it to your liking and rerun hlsdvr.
+# Run with custom configuration path & socket path
+./hlsdvr -config /path/to/config.json -socket /path/to/unix.sock
+```
 
-A common configuration pattern will be having the same option at 3 "levels" with the deeper the option being the higher priority it has. Some options will apply to their lower level counterpart if no override is present. The levels usually being: top-level, platform-level, and streamer-level.
+### Command-line Arguments
 
-The configuration is in the json format, and can be edited during runtime. Meaning you can add or remove streamers to monitor and record without restarting the daemon, or change any other config option. Simply make your edits to the config file in use and save.
+| Flag | Description |
+|------|-------------|
+| `-config <path>` | Path to a configuration file to use/create |
+| `-socket <path>` | Path to create unix socket for RPC |
+| `-no-rpc` | Disable the RPC server from running or being used |
+| `-debug` | Enable debug log level |
+| `-version` | Get the version of the build |
 
-**Currently, if there are errors in the new config after an edit, the default behavior is to simply ignore the changes and continue using the previous configuration. Logs will show errors reflecting this.**
+### hlsctl (Control Utility)
 
-### Twitch Platform Config
-  ```"client_id"``` & ```"client_secret"```: Helix API credentials you must provide, [register an app](https://dev.twitch.tv/docs/authentication/register-app/) on twitch to get them.<br>
-  ```"user_token"``` User token to be used for queries to twitch, this will also enable turbo users to get recordings with no ad interruptions. Thank you to streamlink for an already made easy [tutorial](https://streamlink.github.io/cli/plugins/twitch.html) to get your user token.<br>
- ```"check_live_interval"``` How often we check if any streamers have gone live. (in seconds)<br>
- ```"output_dir_path"``` platform-level override, will record all twitch streams to this directory with username subfolders.<br>
- ```"streamers"``` List of all the streamers to monitor and record.<br>
-  - ```"enabled"``` whether this streamer should be considered when loading config (true/false)
-  - ```"user_login"``` the streamer's login (the name of the channel, such as "twitch" in twitch.tv/twitch)
-  - ```"user_id"``` the streamer's user id (will be used instead of ```user_login``` if provided.
-  - ```"output_dir_path"``` streamer-level override, will record streams for this user to this directory
+The `hlsctl` utility allows you to interact with a running hlsdvr daemon:
 
-## Installation
-Install golang https://go.dev/doc/install<br>
+```bash
+# Check the status of the daemon and the current streams being recorded.
+./hlsctl status
 
-From Source:
-- ```git clone https://github.com/xel86/hlsdvr.git``` then ```cd hlsdvr && go build ./cmd/hlsdvr```
-- After building, the binary ```hlsdvr``` will be located in the same directory, which can then be moved elsewhere.
+# View statistics for the daemon since start time for recordings, streamers, and platforms.
+./hlsctl stats -list
+```
+
+### Command-line Arguments
+
+| Flag | Description |
+|------|-------------|
+| `-socket <path>` | Path to unix socket that the running hlsdvr daemon is using for RPC |
+| `-version` | Get the version of the build |
+
+### Commands
+
+| Command | Description |
+|------|-------------|
+| `status` | See daemon status info and the current streams being recorded |
+| `stats` | View various stats about the daemon, recordings, streamers, and platforms |
+
+Each subcommand has its own set of options. Use the help flag to see them:
+
+```bash
+./hlsctl status -h
+./hlsctl stats -h
+```
+
+## Configuration
+
+The configuration file uses JSON format and can be edited while hlsdvr is running.
+See the Runtime Behavior section for more details.
+
+### Default Configuration Locations
+
+- **Linux**: `~/.config/hlsdvr/config.json`
+- **Windows**: `/AppData/Roaming/hlsdvr/config.json`
+- **macOS**: `/Library/Application Support/hlsdvr/config.json`
+
+A default configuration will be created automatically if one doesn't exist, you must edit it before using it.
+
+### Configuration Hierarchy
+
+Configuration options can exist at three levels, with deeper levels taking priority:
+
+1. **Global level** - Applied to all platforms and streamers
+2. **Platform level** - Applied to all streamers within a platform
+3. **Streamer level** - Applied to a specific streamer
+
+Deeper levels inherit from higher levels if they do not set a value.
+
+### Configuration Reference
+
+Check the `examples/` folder in the project repository for various config file examples.
+
+#### Global Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `output_dir_path` | string | Yes | Base directory for all recordings |
+| `archive_dir_path` | string | No | Base directory for recordings to be moved to once completed |
+| `unix_socket_path` | string | No | Custom path for the unix socket to be created too for RPC |
+
+#### Twitch Platform Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `output_dir_path` | string | No | Override the global output path for all Twitch streams |
+| `archive_dir_path` | string | No | Override the global archive path for all Twitch streams |
+| `client_id` | string | Yes | Twitch Helix API client ID |
+| `client_secret` | string | Yes | Twitch Helix API client secret |
+| `user_token` | string | No | User token for API requests (enables ad-free recording for Turbo users) |
+| `check_live_interval` | integer | No | How often to check if streamers are live (in seconds) |
+| `streamers` | array | Yes | List of streamers to monitor and record |
+
+#### Twitch Streamer Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `output_dir_path` | string | No | Override the platform output path for this specific streamer |
+| `archive_dir_path` | string | No | Override the platform archive path for this specific streamer |
+| `enabled` | boolean | Yes | Whether this streamer should be monitored and recorded |
+| `user_login` | string | Yes* | Streamer's login name (e.g., "twitch" in twitch.tv/twitch) |
+| `user_id` | string | No | Streamer's user ID (takes precedence over `user_login` if provided) |
+
+\* Required if `user_id` is not provided
+
+## API Credentials
+
+### Twitch
+
+1. **Register an application**: Follow the [Twitch documentation](https://dev.twitch.tv/docs/authentication/register-app/) to get your client ID and client secret.
+
+2. **User token** (optional): For ad-free recording (Turbo users), follow the [Streamlink guide](https://streamlink.github.io/cli/plugins/twitch.html) to obtain your user token.
+
+## Runtime Behavior
+
+- The configuration file can be edited while hlsdvr is running
+- Most changes take effect immediately without requiring a restart
+- If the updated configuration contains errors, changes will be rejected and previous configuration retained
+- Errors will be logged when configuration updates fail
+
+## Contributing
+
+Contributions are welcome! The project is designed to make adding support for additional platforms straightforward.
