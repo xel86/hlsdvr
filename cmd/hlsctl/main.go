@@ -343,17 +343,11 @@ func exchangeRpc(socketPath string, timeout time.Duration,
 		return nil, fmt.Errorf("error writing json rpc request to socket: %v", err)
 	}
 
-	buffer := make([]byte, 8192)
-
-	n, err := conn.Read(buffer)
-	if err != nil {
-		return nil, fmt.Errorf("error reading rpc response from socket: %v", err)
-	}
-
 	var response server.RpcResponse
-	err = json.Unmarshal(buffer[:n], &response)
+	decoder := json.NewDecoder(conn)
+	err = decoder.Decode(&response)
 	if err != nil {
-		return nil, fmt.Errorf("error unmarshaling rpc response: %v", err)
+		return nil, fmt.Errorf("error decoding rpc response: %v", err)
 	}
 
 	return &response, nil
