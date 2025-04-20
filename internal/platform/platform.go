@@ -32,6 +32,7 @@ type Streamer interface {
 
 // A live streaming platform that streamer go live and stream on
 // Twitch, YouTube, Kick, etc.
+// Structs that implement Platform should always be used as pointers.
 type Platform interface {
 	Name() string
 	GetCheckInterval() int // In seconds

@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"encoding/json"
@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	configDirName  = "hlsdvr"
-	configFileName = "config.json"
+	ConfigDirName  = "hlsdvr"
+	ConfigFileName = "config.json"
 )
 
 type Config struct {
