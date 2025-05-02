@@ -148,7 +148,11 @@ func (c *APIClient) ensureValidAppToken() error {
 	c.appTokenMutex.RUnlock()
 
 	if noToken || tokenExpired {
-		return c.requestAppAccessToken()
+		err := c.requestAppAccessToken()
+		if err != nil {
+			return fmt.Errorf("failed to request new token: %v", err)
+		}
+		return nil
 	}
 
 	if tokenNotValidated {
@@ -156,7 +160,7 @@ func (c *APIClient) ensureValidAppToken() error {
 		err := c.validateOAuthToken(c.appToken)
 		if err != nil {
 			c.appTokenMutex.RUnlock()
-			return err
+			return fmt.Errorf("failed to validate token: %v", err)
 		}
 
 		// Set app access token to be validated again on an hourly basis as suggested by Twitch.
@@ -186,14 +190,14 @@ func (c *APIClient) requestAppAccessToken() error {
 
 	req, err := http.NewRequest("POST", requrl, bytes.NewBufferString(data.Encode()))
 	if err != nil {
-		return fmt.Errorf("failed to create oauth app token request: %w", err)
+		return fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to request oauth app token: %w", err)
+		return fmt.Errorf("failed to do request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -212,7 +216,7 @@ func (c *APIClient) requestAppAccessToken() error {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return fmt.Errorf("failed to parse token response body into struct: %w", err)
+		return fmt.Errorf("failed to parse token response body: %w", err)
 	}
 
 	// Update our twitch client's struct with a newly refreshed OAuth token.
@@ -235,14 +239,14 @@ func (c *APIClient) validateOAuthToken(token string) error {
 
 	req, err := http.NewRequest("GET", requrl, nil)
 	if err != nil {
-		return fmt.Errorf("failed to create /validate oauth token request: %w", err)
+		return fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Add("Authorization", "OAuth "+token)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to send GET request to validate oauth token: %w", err)
+		return fmt.Errorf("failed to do request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -262,7 +266,7 @@ func (c *APIClient) GetUsers(params GetUsersParams) (*APIGetUsersResponse, error
 
 	err := c.ensureValidAppToken()
 	if err != nil {
-		return nil, fmt.Errorf("unable to use a valid oauth access token: %w", err)
+		return nil, fmt.Errorf("unable to use a valid app token: %w", err)
 	}
 
 	query := url.Values{}
@@ -277,7 +281,7 @@ func (c *APIClient) GetUsers(params GetUsersParams) (*APIGetUsersResponse, error
 	requrl += ("?" + query.Encode())
 	req, err := http.NewRequest("GET", requrl, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create new request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	c.appTokenMutex.RLock()
@@ -301,7 +305,7 @@ func (c *APIClient) GetUsers(params GetUsersParams) (*APIGetUsersResponse, error
 
 	var getUsersResp APIGetUsersResponse
 	if err := json.NewDecoder(resp.Body).Decode(&getUsersResp); err != nil {
-		return nil, fmt.Errorf("failed to parse GetStreams response json: %w", err)
+		return nil, fmt.Errorf("failed to parse response json: %w", err)
 	}
 
 	getUsersResp.userIdMap = make(map[string]*APIGetUsersData, len(getUsersResp.Data))
@@ -319,7 +323,7 @@ func (c *APIClient) GetStreams(params GetStreamsParams) (*APIGetStreamsResponse,
 
 	err := c.ensureValidAppToken()
 	if err != nil {
-		return nil, fmt.Errorf("unable to use a valid oauth access token: %w", err)
+		return nil, fmt.Errorf("unable to use a valid app token: %w", err)
 	}
 
 	query := url.Values{}
@@ -337,7 +341,7 @@ func (c *APIClient) GetStreams(params GetStreamsParams) (*APIGetStreamsResponse,
 	requrl += ("?" + query.Encode())
 	req, err := http.NewRequest("GET", requrl, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create new GetStreams request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	c.appTokenMutex.RLock()
@@ -347,7 +351,7 @@ func (c *APIClient) GetStreams(params GetStreamsParams) (*APIGetStreamsResponse,
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to do GetStreams request: %w", err)
+		return nil, fmt.Errorf("failed to do request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -361,7 +365,7 @@ func (c *APIClient) GetStreams(params GetStreamsParams) (*APIGetStreamsResponse,
 
 	var getStreamsResp APIGetStreamsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&getStreamsResp); err != nil {
-		return nil, fmt.Errorf("failed to parse GetStreams response json: %w", err)
+		return nil, fmt.Errorf("failed to parse response json: %w", err)
 	}
 
 	return &getStreamsResp, nil
@@ -390,12 +394,12 @@ func (c *APIClient) getPlaybackAccessToken(userLogin string) (*StreamPlaybackAcc
 
 	jsonData, err := json.Marshal(query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal PlaybackAccessToken gql query as json: %w", err)
+		return nil, fmt.Errorf("failed to marshal gql query as json: %w", err)
 	}
 
 	req, err := http.NewRequest("POST", gqlURL, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create PlaybackAccessToken gql POST request: %w", err)
+		return nil, fmt.Errorf("failed to create gql request: %w", err)
 	}
 
 	req.Header.Set("Client-ID", "kimne78kx3ncx6brgo4mv6wki5h1ko") // TODO: make this config/passed in
@@ -408,7 +412,7 @@ func (c *APIClient) getPlaybackAccessToken(userLogin string) (*StreamPlaybackAcc
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to do PlaybackAccessToken gql request: %w", err)
+		return nil, fmt.Errorf("failed to do gql request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -422,7 +426,7 @@ func (c *APIClient) getPlaybackAccessToken(userLogin string) (*StreamPlaybackAcc
 
 	var tokenResp GQLPlaybackAccessTokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to parse PlaybackAccessToken GQL response json: %w", err)
+		return nil, fmt.Errorf("failed to parse gql response json: %w", err)
 	}
 
 	return &tokenResp.Data.Token, nil

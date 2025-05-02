@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
 
 func IsFlagPassed(name string) bool {
@@ -52,4 +55,23 @@ func MoveFile(sourcePath string, destDirPath string, destFileName string) error 
 	}
 
 	return nil
+}
+
+// This replaces all urls from a string with https://...<ext>
+// The main intention is to use this to remove urls from http client errors in hls functions
+// because they are usually incredibly long and don't actually provide any context due to the nature
+// of how the playlist links actually look. We provide context on the errors ourselves.
+func TruncateUrlsFromString(errMsg string) string {
+	urlRegex := regexp.MustCompile(`https://[^\s"']+`)
+
+	// Find all URLs in the error message and replace them with https://...ext
+	return urlRegex.ReplaceAllStringFunc(errMsg, func(url string) string {
+		ext := path.Ext(url)
+
+		if ext == "" {
+			return "https://..."
+		}
+
+		return "https://..." + strings.TrimPrefix(ext, ".")
+	})
 }

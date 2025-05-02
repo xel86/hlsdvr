@@ -168,8 +168,9 @@ loop:
 
 		liveStreamers, err := pm.platform.GetLiveStreamers()
 		if err != nil {
-			slog.Error(fmt.Sprintf("(%s) failed to get streamers who are live: %v", pm.platform.Name(), err))
-			continue // TODO: do we want to just try forever or should we have a retry limit?
+			slog.Error(fmt.Sprintf("(%s) failed checking for live streams: %v", pm.platform.Name(),
+				util.TruncateUrlsFromString(err.Error())))
+			continue // this will attempt forever; shut down daemon, change config, or send signal to stop.
 		}
 
 		pm.recordingMapMutex.Lock()

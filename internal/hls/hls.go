@@ -102,7 +102,7 @@ func DigestFileInfoString(d RecordingDigest) string {
 func GetM3U8PlaylistData(httpClient *http.Client, url string) (string, error) {
 	resp, err := httpClient.Get(url)
 	if err != nil {
-		return "", fmt.Errorf("error performing GET request: %s", removeUrlsFromString(err.Error()))
+		return "", fmt.Errorf("error performing GET request: %s", util.TruncateUrlsFromString(err.Error()))
 	}
 	defer resp.Body.Close()
 
@@ -427,7 +427,7 @@ func (r *Recorder) downloadSegmentsData(segments []M3U8Segment) error {
 func (r *Recorder) getSegment(segment M3U8Segment) error {
 	resp, err := r.httpClient.Get(segment.Url)
 	if err != nil {
-		return fmt.Errorf("%s", removeUrlsFromString(err.Error()))
+		return fmt.Errorf("%s", util.TruncateUrlsFromString(err.Error()))
 	}
 	defer resp.Body.Close()
 
@@ -551,23 +551,4 @@ func FullTimeParse(value string) (time.Time, error) {
 		}
 	}
 	return t, err
-}
-
-// This replaces all urls from a string with https://...<ext>
-// The main intention is to use this to remove urls from http client errors in hls functions
-// because they are usually incredibly long and don't actually provide any context due to the nature
-// of how the playlist links actually look. We provide context on the errors ourselves.
-func removeUrlsFromString(errMsg string) string {
-	urlRegex := regexp.MustCompile(`https://[^\s"']+`)
-
-	// Find all URLs in the error message and replace them with https://...ext
-	return urlRegex.ReplaceAllStringFunc(errMsg, func(url string) string {
-		ext := path.Ext(url)
-
-		if ext == "" {
-			return "https://..."
-		}
-
-		return "https://..." + strings.TrimPrefix(ext, ".")
-	})
 }

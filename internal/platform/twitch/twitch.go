@@ -106,7 +106,7 @@ func NewPlatform(cfg Config) (*Platform, error) {
 
 	err := t.api.ensureValidAppToken()
 	if err != nil {
-		return nil, fmt.Errorf("Unable to obtain valid twitch helix api token: %v", err)
+		return nil, fmt.Errorf("Unable to obtain valid helix api token: %v", err)
 	}
 
 	if cfg.UserToken != "" {
@@ -118,7 +118,7 @@ func NewPlatform(cfg Config) (*Platform, error) {
 
 	valid, err := t.setupValidatedStreamers(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract and validate streamer(s) from config: %v", err)
+		return nil, fmt.Errorf("failed to validate streamer(s) from config: %v", err)
 	}
 
 	t.streamers = valid.Streamers
@@ -173,7 +173,7 @@ func (t *Platform) setupValidatedStreamers(cfg Config) (*ValidatedStreamersRetur
 
 	usersResp, err := t.api.GetUsers(GetUsersParams{UserIDs: userIdsParam, UserLogins: userLoginsParam})
 	if err != nil {
-		return nil, fmt.Errorf("failed to call GetUsers from api: %v", err)
+		return nil, fmt.Errorf("api error (GetUsers): %v", err)
 	}
 
 	var validated ValidatedStreamersReturn
@@ -249,7 +249,7 @@ func (t *Platform) setupValidatedStreamers(cfg Config) (*ValidatedStreamersRetur
 func (t *Platform) UpdateConfig(platformCfg any) (bool, error) {
 	cfg, ok := platformCfg.(*Config)
 	if !ok {
-		return false, fmt.Errorf("tried to update with non-twitch config: %v", platformCfg)
+		return false, fmt.Errorf("update with non-twitch config: %v", platformCfg)
 	}
 
 	if reflect.DeepEqual(*cfg, t.currentActiveCfg) {
@@ -269,7 +269,7 @@ func (t *Platform) UpdateConfig(platformCfg any) (bool, error) {
 		err := newApi.ensureValidAppToken()
 		if err != nil {
 			return appliedChanges, fmt.Errorf(
-				"Unable to obtain valid twitch helix api token with new config credentials: %v", err)
+				"Unable to obtain valid helix api token with new config credentials: %v", err)
 		}
 
 		slog.Info("(twitch) set new ClientID and/or ClientSecret from config successfully.")
@@ -363,13 +363,13 @@ func (t *Platform) GetLiveStreamers() ([]platform.Streamer, error) {
 
 	resp, err := t.api.GetStreams(GetStreamsParams{UserIDs: userIds})
 	if err != nil {
-		return nil, fmt.Errorf("error from twitch api: %v", err)
+		return nil, fmt.Errorf("api error (GetStreams): %v", err)
 	}
 
 	for _, stream := range resp.Data {
 		streamer, found := t.userIdMap[stream.UserID]
 		if !found {
-			slog.Warn(fmt.Sprintf("twitch: a live stream (%s) which was not requested was returned?", stream.UserLogin))
+			slog.Warn(fmt.Sprintf("(twitch) a live stream (%s) which was not requested was returned?", stream.UserLogin))
 			continue
 		}
 
@@ -386,7 +386,7 @@ func (t *Platform) GetHLSStream(s platform.Streamer) (hls.M3U8StreamVariant, err
 	token, err := t.api.getPlaybackAccessToken(s.Username())
 	if err != nil {
 		return hls.M3U8StreamVariant{},
-			fmt.Errorf("Twitch: Error getting playback access token: %v", err)
+			fmt.Errorf("error getting playback access token: %v", err)
 	}
 
 	variantPlaylistUrl := makeUsherM3U8PlaylistUrl(s.Username(), token)
@@ -394,7 +394,7 @@ func (t *Platform) GetHLSStream(s platform.Streamer) (hls.M3U8StreamVariant, err
 	streamVariants, err := hls.GetM3U8StreamVariants(t.httpClient, variantPlaylistUrl)
 	if err != nil {
 		return hls.M3U8StreamVariant{},
-			fmt.Errorf("Twitch: Error getting stream variants from m3u8 playlist: %v", err)
+			fmt.Errorf("error getting stream variants from m3u8 playlist: %v", err)
 	}
 
 	// TODO: configuration for quality, sorting by quality, resolution, codec, etc.
