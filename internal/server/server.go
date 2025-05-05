@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xel86/hlsdvr/internal/hls"
 	"github.com/xel86/hlsdvr/internal/platform"
 )
 
@@ -41,27 +40,39 @@ type RpcResponse struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
-// "twitch" -> data, "youtube" -> data
-type RpcCmdStatusData map[string][]RpcStreamInfoResponse
-type RpcCmdStatsData map[string]platform.HistoricalStats
-
-// TODO: should this be not in server.go and be a struct used elsewhere for other functions?
-type RpcStreamInfoResponse struct {
-	Identifier string
-	ViewCount  int
-	Title      string
-	Category   string
-	Digest     hls.RecordingDigest
+type RpcCmdStatsParams struct {
+	IncludePastDigests bool `json:"include_past_digests"`
 }
 
-func doRpcCommandStats(pcs *platform.CommandSender) (RpcCmdStatsData, error) {
+// "twitch" -> data, "youtube" -> data
+type RpcCmdStatsData map[string]platform.CmdStatsReturn
+
+func doRpcCommandStats(pcs *platform.CommandSender, cmdValue map[string]any) (RpcCmdStatsData, error) {
 	numPlatforms := pcs.GetNumPlatforms()
 	ch := make(chan any, numPlatforms)
+	data := RpcCmdStatsData{}
 
-	pcs.Broadcast(platform.CommandMsg{Type: platform.CmdStats, Value: nil, ReturnChan: ch})
+	// Default params
+	params := platform.CmdStatsParams{
+		IncludePastDigests: false,
+	}
+
+	if cmdValue != nil {
+		paramsBytes, err := json.Marshal(cmdValue)
+		if err != nil {
+			return data, fmt.Errorf("(server) couldn't marshal client's sent message params: %v", err)
+		}
+
+		var decodedParams RpcCmdStatsParams
+		if err := json.Unmarshal(paramsBytes, &decodedParams); err != nil {
+			return data, fmt.Errorf("(server) invalid paramaters sent to stats command: %v", err)
+		}
+		params.IncludePastDigests = decodedParams.IncludePastDigests
+	}
+
+	pcs.Broadcast(platform.CommandMsg{Type: platform.CmdStats, Value: params, ReturnChan: ch})
 	timeout := time.After(5 * time.Second)
 
-	data := RpcCmdStatsData{}
 	for range numPlatforms {
 		select {
 		case status := <-ch:
@@ -71,41 +82,9 @@ func doRpcCommandStats(pcs *platform.CommandSender) (RpcCmdStatsData, error) {
 					"(server) received incorrect response from platform for stats command: %v", status))
 			}
 
-			data[v.PlatformName] = v.Stats
+			data[v.PlatformName] = v
 		case <-timeout:
 			return data, fmt.Errorf("timed out waiting for platform(s) to return stats information")
-		}
-	}
-
-	return data, nil
-}
-
-func doRpcCommandStatus(pcs *platform.CommandSender) (RpcCmdStatusData, error) {
-	numPlatforms := pcs.GetNumPlatforms()
-	ch := make(chan any, numPlatforms)
-
-	pcs.Broadcast(platform.CommandMsg{Type: platform.CmdStatus, Value: nil, ReturnChan: ch})
-	timeout := time.After(5 * time.Second)
-
-	data := RpcCmdStatusData{}
-	for range numPlatforms {
-		select {
-		case status := <-ch:
-			v, ok := status.(platform.CmdStatusReturn)
-			if !ok {
-				slog.Error(fmt.Sprintf(
-					"(server) received incorrect response from platform for status command: %v", status))
-			}
-
-			for _, digest := range v.Digests {
-				data[v.PlatformName] = append(data[v.PlatformName],
-					RpcStreamInfoResponse{
-						Identifier: digest.Identifier,
-						Digest:     digest,
-					})
-			}
-		case <-timeout:
-			return data, fmt.Errorf("timed out waiting for platform(s) to return status information")
 		}
 	}
 
@@ -132,20 +111,9 @@ func handleRpcClient(conn net.Conn, pcs *platform.CommandSender) {
 
 		slog.Debug(fmt.Sprintf("(server) received RPC server request: %v", req))
 		switch req.Command {
-		case "status":
-			{
-				data, err := doRpcCommandStatus(pcs)
-				if err != nil {
-					errStr := err.Error()
-					slog.Warn(fmt.Sprintf("(server) %s", errStr))
-					resp.Success = false
-					resp.Error = &errStr
-				}
-				respData = data
-			}
 		case "stats":
 			{
-				data, err := doRpcCommandStats(pcs)
+				data, err := doRpcCommandStats(pcs, req.Value)
 				if err != nil {
 					errStr := err.Error()
 					slog.Warn(fmt.Sprintf("(server) %s", errStr))

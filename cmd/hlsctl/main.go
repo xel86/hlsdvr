@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path"
@@ -11,7 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/xel86/hlsdvr/internal/hls"
+	"github.com/xel86/hlsdvr/internal/platform"
 	"github.com/xel86/hlsdvr/internal/server"
 	"github.com/xel86/hlsdvr/internal/util"
 )
@@ -94,6 +95,108 @@ func printHelp() {
 	fmt.Println("  hlsctl status -h")
 }
 
+// TODO: this is gonna estimate time till drive is full per platform...
+// which makes no sense. it should combine all the platforms.
+func printDriveTimeStats(targets []platform.StreamerTargets, stats platform.PlatformStats) {
+	outputDrives := make(map[string][]platform.StreamerTargets)
+	archiveDrives := make(map[string][]platform.StreamerTargets)
+	for _, t := range targets {
+		// If a streamer has an archive directory path,
+		// only print estimated time for it, not the output path as well.
+		if t.ArchiveDirPath != nil {
+			aDevice, err := GetDriveIdentifier(*t.ArchiveDirPath)
+			if err != nil {
+				fmt.Printf("Error getting drive information for an archive path: %v\n", err)
+				continue
+			}
+
+			archiveDrives[aDevice] = append(archiveDrives[aDevice], t)
+			continue
+		}
+
+		oDevice, err := GetDriveIdentifier(t.OutputDirPath)
+		if err != nil {
+			fmt.Printf("Error getting drive information for an output path: %v\n", err)
+			continue
+		}
+		outputDrives[oDevice] = append(outputDrives[oDevice], t)
+	}
+
+	if len(outputDrives) > 0 {
+		fmt.Printf("Output drives:\n")
+		printEstimatedTimePerDrive(outputDrives, stats, true)
+		fmt.Printf("\n")
+	}
+
+	if len(archiveDrives) > 0 {
+		fmt.Printf("Archive drives:\n")
+		printEstimatedTimePerDrive(archiveDrives, stats, false)
+		fmt.Printf("\n")
+	}
+}
+
+func printEstimatedTimePerDrive(
+	drives map[string][]platform.StreamerTargets,
+	stats platform.PlatformStats,
+	outputDrive bool) {
+
+	for driveId, pathsOnDrive := range drives {
+		var totalBytesWritten int
+		for _, target := range pathsOnDrive {
+			sStats, exists := stats.StreamerStats[target.Username]
+			if exists {
+				totalBytesWritten += sStats.BytesWritten
+			}
+		}
+
+		if totalBytesWritten == 0 {
+			continue
+		}
+
+		avgBytesPerSecond := totalBytesWritten / int(time.Since(stats.StartTime).Seconds())
+
+		var basePath string
+		if outputDrive {
+			basePath = pathsOnDrive[0].OutputDirPath
+		} else {
+			basePath = *pathsOnDrive[0].ArchiveDirPath
+		}
+
+		total, _, free, err := GetDriveUtilization(basePath)
+		if err != nil {
+			fmt.Printf("Error getting disk utilization information for %s: %v", basePath, err)
+			continue
+		}
+
+		if total == 0 {
+			continue
+		}
+
+		// Calculate seconds until full
+		secondsUntilFull := free / uint64(avgBytesPerSecond)
+		duration := time.Duration(secondsUntilFull) * time.Second
+
+		days := int(math.Floor(duration.Hours() / 24))
+		hours := int(math.Floor(duration.Hours())) % 24
+		minutes := int(math.Floor(duration.Minutes())) % 60
+
+		rootDirPath, err := GetMountPointForPath(basePath)
+		if err != nil {
+			fmt.Printf("Error getting mount point for path: %v", err)
+			rootDirPath = driveId
+		}
+
+		if rootDirPath == "" {
+			rootDirPath = driveId
+		}
+
+		fmt.Printf("%s: Estimated time till disk full: %dd %dh %dm (%s free)\n",
+			rootDirPath,
+			days, hours, minutes,
+			util.HumanReadableBytes(int(free)))
+	}
+}
+
 func handleStats(args []string) {
 	// Create a new FlagSet for the stats command
 	var tail int
@@ -117,7 +220,9 @@ func handleStats(args []string) {
 		return
 	}
 
-	commandMsg := server.RpcRequest{Command: "stats"}
+	commandMsg := server.RpcRequest{Command: "stats", Value: map[string]any{
+		"include_past_digests": *list,
+	}}
 
 	response, err := exchangeRpc(socketPath, defaultTimeout, commandMsg)
 	if err != nil {
@@ -135,6 +240,7 @@ func handleStats(args []string) {
 			fmt.Printf("Failed to do stats command: %v\n", response.Error)
 		}
 		fmt.Println("Failed to do stats command")
+		return
 	}
 
 	if response.Data != nil {
@@ -144,58 +250,34 @@ func handleStats(args []string) {
 		err := json.Unmarshal(response.Data, &statsData)
 		if err != nil {
 			fmt.Printf("error unmarshalling stats command response data from hlsdvr RPC server: %v\n", err)
+			return
 		}
 
 		if len(statsData) == 0 {
 			fmt.Println("No stats available for any platforms (are any platforms being monitored?)")
+			return
 		}
 
 		for platformName, v := range statsData {
-			var bytesWrittenPlatform int
-			var totalDurationPlatform float64
-			var avgBytesPerStreamPlatform int
-			var avgBytesPerSecondPlatform int
-			var numRecordingsPlatform int
 			fmt.Printf("%s:\n", platformName)
 
-			if v.BytesWritten == 0 || v.Recordings == 0 {
+			if v.Stats.BytesWritten == 0 || v.Stats.Recordings == 0 {
 				fmt.Println(" No recordings made.")
 				continue
 			}
 
-			// Group all the digests into digests per streamer (identifer)
-			groupedDigests := make(map[string][]hls.RecordingDigest)
-			for _, digest := range v.FinishedDigests {
-				identifer := digest.Identifier
-				groupedDigests[identifer] = append(groupedDigests[identifer], digest)
-			}
-
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
 
-			for identifer, digests := range groupedDigests {
-				// Sum values per streamer (identifer)
-				var bytesWritten int
-				var totalDuration float64
-				var avgBytesPerStream int
-				var avgBytesPerSecond int
-				numRecordings := len(digests)
-
-				for _, digest := range digests {
-					bytesWritten += digest.BytesWritten
-					totalDuration += digest.RecordingDuration
-				}
-				avgBytesPerSecond = (bytesWritten / int(totalDuration))
-				avgBytesPerStream = (bytesWritten / numRecordings)
-
+			for identifer, s := range v.Stats.StreamerStats {
 				fmt.Fprintf(w, "  %s:\t(total: %s / recordings: %d) ~[%s/stream | %s/sec]\n",
 					identifer,
-					util.HumanReadableBytes(bytesWritten),
-					numRecordings,
-					util.HumanReadableBytes(avgBytesPerStream),
-					util.HumanReadableBytes(avgBytesPerSecond))
+					util.HumanReadableBytes(s.BytesWritten),
+					s.Recordings,
+					util.HumanReadableBytes(s.AvgBytesPerStream),
+					util.HumanReadableBytes(s.AvgBytesPerSecondLive))
 
 				if *list {
-					dLen := len(digests)
+					dLen := len(s.FinishedDigests)
 
 					// Only print the last N tail elements from digests array
 					// If tail is 0 print the whole array.
@@ -207,29 +289,26 @@ func handleStats(args []string) {
 					for i := startIndex; i < dLen; i++ {
 						fmt.Fprintf(w, "\t%d: [%s]:\t%s / %s (%dx%d @ %.2f)\n",
 							i+1,
-							path.Base(digests[i].OutputPath),
-							util.HumanReadableBytes(digests[i].BytesWritten),
-							util.HumanReadableSeconds(int(digests[i].RecordingDuration)),
-							digests[i].Width, digests[i].Height, digests[i].FrameRate)
+							path.Base(s.FinishedDigests[i].OutputPath),
+							util.HumanReadableBytes(s.FinishedDigests[i].BytesWritten),
+							util.HumanReadableSeconds(int(s.FinishedDigests[i].RecordingDuration)),
+							s.FinishedDigests[i].Width, s.FinishedDigests[i].Height,
+							s.FinishedDigests[i].FrameRate)
 					}
 					fmt.Fprintf(w, "\t\t\n")
 				}
-
-				// Update platform totals
-				bytesWrittenPlatform += bytesWritten
-				totalDurationPlatform += totalDuration
-				numRecordingsPlatform += numRecordings
 			}
 
-			avgBytesPerSecondPlatform = (bytesWrittenPlatform / int(totalDurationPlatform))
-			avgBytesPerStreamPlatform = (bytesWrittenPlatform / numRecordingsPlatform)
 			fmt.Fprintf(w, "%s:\t(total: %s / recordings: %d) ~[%s/stream | %s/sec]\n\n",
 				platformName,
-				util.HumanReadableBytes(bytesWrittenPlatform),
-				numRecordingsPlatform,
-				util.HumanReadableBytes(avgBytesPerStreamPlatform),
-				util.HumanReadableBytes(avgBytesPerSecondPlatform))
+				util.HumanReadableBytes(v.Stats.BytesWritten),
+				v.Stats.Recordings,
+				util.HumanReadableBytes(v.Stats.AvgBytesPerStream),
+				util.HumanReadableBytes(v.Stats.AvgBytesPerSecond))
+
 			w.Flush()
+
+			printDriveTimeStats(v.StreamerTargets, v.Stats)
 		} // end platform stats extraction/print loop
 	} else {
 		fmt.Println("No stats data received.")
@@ -253,7 +332,7 @@ func handleStatus(args []string) {
 		return
 	}
 
-	commandMsg := server.RpcRequest{Command: "status"}
+	commandMsg := server.RpcRequest{Command: "stats"}
 
 	response, err := exchangeRpc(socketPath, defaultTimeout, commandMsg)
 	if err != nil {
@@ -271,26 +350,34 @@ func handleStatus(args []string) {
 			fmt.Printf("Failed to do status command: %v\n", response.Error)
 		}
 		fmt.Println("Failed to do status command")
+		return
 	}
 
 	if response.Data != nil {
-		statusData := server.RpcCmdStatusData{}
+		statusData := server.RpcCmdStatsData{}
 
 		// Unmarshal the generic json.RawMessage into the command specific data struct.
 		err := json.Unmarshal(response.Data, &statusData)
 		if err != nil {
 			fmt.Printf("error unmarshalling status command response data from hlsdvr RPC server: %v\n", err)
+			return
 		}
 
 		if len(statusData) == 0 {
-			fmt.Println("No streams are live/being recorded.")
+			fmt.Println("No platforms being monitored.")
+			return
 		}
 
 		for platformName, v := range statusData {
+			if len(v.LiveDigests) == 0 {
+				fmt.Printf("%s: no streamers are live/being recorded.\n", platformName)
+				return
+			}
+
 			totalBytesPerSecond := 0
 			if *verbose {
-				for _, stream := range v { // we're iterating this twice but its cleaner than the alternative
-					totalBytesPerSecond += stream.Digest.BytesPerSecond
+				for _, digest := range v.LiveDigests { // we're iterating this twice but its cleaner than the alternative
+					totalBytesPerSecond += digest.BytesPerSecond
 				}
 
 				fmt.Printf("%s (%s/s):\n\n",
@@ -301,21 +388,24 @@ func handleStatus(args []string) {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
-			for _, stream := range v {
+			for _, digest := range v.LiveDigests {
 				fmt.Fprintf(w, "  %s:\t[%s]:\t%s / %s (%dx%d @ %.2f)\n",
-					stream.Identifier,
-					path.Base(stream.Digest.OutputPath),
-					util.HumanReadableBytes(stream.Digest.BytesWritten),
-					util.HumanReadableSeconds(int(stream.Digest.RecordingDuration)),
-					stream.Digest.Width, stream.Digest.Height, stream.Digest.FrameRate)
+					digest.Identifier,
+					path.Base(digest.OutputPath),
+					util.HumanReadableBytes(digest.BytesWritten),
+					util.HumanReadableSeconds(int(digest.RecordingDuration)),
+					digest.Width, digest.Height, digest.FrameRate)
 				if *verbose {
 					fmt.Fprintf(w, "  \t\t%s/s (%s/s avg.)\n",
-						util.HumanReadableBytes(stream.Digest.BytesPerSecond),
-						util.HumanReadableBytes(stream.Digest.AvgBytesPerSecond))
+						util.HumanReadableBytes(digest.BytesPerSecond),
+						util.HumanReadableBytes(digest.AvgBytesPerSecond))
 					fmt.Fprintf(w, "\t\t\n")
 				}
 			}
 			w.Flush()
+
+			fmt.Println()
+			printDriveTimeStats(v.StreamerTargets, v.Stats)
 		}
 	} else {
 		fmt.Println("No status data received.")

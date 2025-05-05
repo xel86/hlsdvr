@@ -31,6 +31,7 @@ type ValidatedStreamersReturn struct {
 	userLoginMap map[string]*Streamer
 }
 
+// Methods to satisfy Streamer interface
 func (s *Streamer) UniqueID() string {
 	return s.UserID
 }

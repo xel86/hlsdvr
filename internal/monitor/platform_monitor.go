@@ -27,7 +27,7 @@ type PlatformMonitor struct {
 	recordingMap      map[string]*hls.Recorder
 	recordingMapMutex sync.Mutex
 
-	stats      platform.HistoricalStats
+	stats      platform.PlatformStats
 	statsMutex sync.RWMutex
 }
 
@@ -64,40 +64,118 @@ func (pm *PlatformMonitor) doPlatformCmdConfigReload(msg platform.CommandMsg) (b
 	return applied, nil
 }
 
-func (pm *PlatformMonitor) doPlatformCmdStatus(msg platform.CommandMsg) {
-	pm.recordingMapMutex.Lock()
-	defer pm.recordingMapMutex.Unlock()
+func updateStats(stats *platform.PlatformStats, digest hls.RecordingDigest) {
+	// platform stats
+	stats.BytesWritten += digest.BytesWritten
+	stats.TotalDuration += digest.RecordingDuration
+	stats.Recordings += 1
+	stats.AvgBytesPerStream = stats.BytesWritten / stats.Recordings
 
-	var digests []hls.RecordingDigest
+	// per-streamer stats
+	sStats, exists := stats.StreamerStats[digest.Identifier]
+	if !exists {
+		sStats = &platform.StreamerStats{}
+		stats.StreamerStats[digest.Identifier] = sStats
+	}
+
+	sStats.BytesWritten += digest.BytesWritten
+	sStats.TotalDuration += digest.RecordingDuration
+	sStats.Recordings += 1
+	sStats.AvgBytesPerStream = sStats.BytesWritten / sStats.Recordings
+	if sStats.TotalDuration != 0 {
+		sStats.AvgBytesPerSecondLive = sStats.BytesWritten / int(sStats.TotalDuration)
+	}
+	sStats.FinishedDigests = append(sStats.FinishedDigests, digest)
+}
+
+func (pm *PlatformMonitor) doPlatformCmdStats(msg platform.CommandMsg) {
+	pm.recordingMapMutex.Lock()
+	pm.statsMutex.RLock()
+	defer pm.recordingMapMutex.Unlock()
+	defer pm.statsMutex.RUnlock()
+
+	params := platform.CmdStatsParams{}
+	if msg.Value != nil {
+		v, ok := msg.Value.(platform.CmdStatsParams)
+		if !ok {
+			slog.Error(fmt.Sprintf(
+				"(%s): stats command message does not contain valid CmdStatsParams value: %+v",
+				pm.platform.Name(), msg.Value))
+			return
+		}
+		params = v
+	}
+
+	var liveDigests []hls.RecordingDigest
 	for _, v := range pm.recordingMap {
 		if v != nil {
-			digests = append(digests, v.GetCurrentDigest())
+			liveDigests = append(liveDigests, v.GetCurrentDigest())
 		}
 	}
 
-	returnMsg := platform.CmdStatusReturn{
-		PlatformName: pm.platform.Name(),
-		Digests:      digests,
+	targets := []platform.StreamerTargets{} // for calculating disk utilization and estimated times
+	for _, s := range pm.platform.GetStreamers() {
+		targets = append(targets, platform.StreamerTargets{
+			Username:       s.Username(),
+			OutputDirPath:  s.GetOutputDirPath(),
+			ArchiveDirPath: s.GetArchiveDirPath(),
+		})
 	}
 
-	// ensure non-blocking send
-	select {
-	case msg.ReturnChan <- returnMsg:
-	default:
-		slog.Warn(fmt.Sprintf(
-			"(%s) tried returning status, but the channel was unavailable. Dropped message: %v",
-			pm.platform.Name(), returnMsg))
+	// TODO: Can we avoid doing this incredibly ugly copy?
+	// We need to create a deep copy to send out since we use pointers for the streamer stats and slices
+	// and the rpc server won't be responsible for locking.
+	// But also we want to avoid having to make a big copy for the digests slices if
+	// the param wasn't passed in to do so.
+	// All we want to do is copy existing stats but exclude/include the FinishedDigests for each streamer
+	// based on the IncludePastDigests option without doing any unnecessary large copies
+	statsCopy := platform.PlatformStats{
+		BytesWritten:      pm.stats.BytesWritten,
+		AvgBytesPerStream: pm.stats.AvgBytesPerStream,
+		AvgBytesPerSecond: pm.stats.AvgBytesPerSecond,
+		TotalDuration:     pm.stats.TotalDuration,
+		Recordings:        pm.stats.Recordings,
+		StartTime:         pm.stats.StartTime,
+		StreamerStats:     make(map[string]*platform.StreamerStats, len(pm.stats.StreamerStats)),
 	}
-}
+	for username, stats := range pm.stats.StreamerStats {
+		digestsCopy := []hls.RecordingDigest{}
+		if params.IncludePastDigests {
+			digestsCopy = make([]hls.RecordingDigest, len(stats.FinishedDigests))
+			copy(digestsCopy, stats.FinishedDigests)
+		}
 
-// TODO: would it be worthwhile/efficient/cleaner to just have stats be returned by CmdStatus?
-func (pm *PlatformMonitor) doPlatformCmdStats(msg platform.CommandMsg) {
-	pm.statsMutex.RLock()
-	defer pm.statsMutex.RUnlock()
+		statsCopy.StreamerStats[username] = &platform.StreamerStats{
+			BytesWritten:          stats.BytesWritten,
+			AvgBytesPerStream:     stats.AvgBytesPerStream,
+			AvgBytesPerSecondLive: stats.AvgBytesPerSecondLive,
+			AvgBytesPerSecond:     stats.AvgBytesPerSecond,
+			TotalDuration:         stats.TotalDuration,
+			Recordings:            stats.Recordings,
+			FinishedDigests:       digestsCopy,
+		}
+	}
+
+	// Update the historical stats with the current stats from the live digests
+	// Update the copy, not the real stats, since the stats internally should only
+	// track & be updated for completed recordings, not ongoing ones.
+	for _, d := range liveDigests {
+		updateStats(&statsCopy, d)
+	}
+
+	// Calculate average bytes per second for both platform and per-streamer (offline+live time) here.
+	// This is for accuracy as the stats would only be updated after an additional stream has ended
+	// if we calculated them like every other stat.
+	statsCopy.AvgBytesPerSecond = (statsCopy.BytesWritten / int(time.Since(statsCopy.StartTime).Seconds()))
+	for _, v := range statsCopy.StreamerStats {
+		v.AvgBytesPerSecond = (v.BytesWritten / int(time.Since(statsCopy.StartTime).Seconds()))
+	}
 
 	returnMsg := platform.CmdStatsReturn{
-		PlatformName: pm.platform.Name(),
-		Stats:        pm.stats,
+		PlatformName:    pm.platform.Name(),
+		StreamerTargets: targets,
+		LiveDigests:     liveDigests,
+		Stats:           statsCopy,
 	}
 
 	// ensure non-blocking send
@@ -128,8 +206,6 @@ func (pm *PlatformMonitor) handlePlatformCommandMsg(msg platform.CommandMsg) {
 					"(%s) config successfully updated, but no changes were applied", pm.platform.Name()))
 			}
 		}
-	case platform.CmdStatus:
-		pm.doPlatformCmdStatus(msg)
 	case platform.CmdStats:
 		pm.doPlatformCmdStats(msg)
 	}
@@ -147,6 +223,7 @@ func (pm *PlatformMonitor) StartMonitor() {
 	var wg sync.WaitGroup
 
 	pm.stats.StartTime = time.Now()
+	pm.stats.StreamerStats = make(map[string]*platform.StreamerStats)
 
 	// set timer to 1 so that the first loop iteration will start instantly.
 	// reset and wait the platform check interval every time after this.
@@ -245,9 +322,7 @@ loop:
 				}
 
 				pm.statsMutex.Lock()
-				pm.stats.BytesWritten += digest.BytesWritten
-				pm.stats.Recordings += 1
-				pm.stats.FinishedDigests = append(pm.stats.FinishedDigests, digest)
+				updateStats(&pm.stats, digest)
 				pm.statsMutex.Unlock()
 
 				// If an archive dir path has been set in the config for either the top, platform, or streamer level,

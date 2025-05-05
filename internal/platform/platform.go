@@ -54,12 +54,26 @@ type Platform interface {
 
 // Historical stats for a platform being monitored.
 // Variables such as BytesWritten are totals, summed incrementally from each additional recording.
-type HistoricalStats struct {
-	BytesWritten      int                   // Total bytes written to disk across all recordings.
-	AvgBytesPerSecond int                   // Total average bytes per second over runtime of platform.
-	Recordings        int                   // Total number of live streams recorded.
-	FinishedDigests   []hls.RecordingDigest // All hls digests from completed streams.
-	StartTime         time.Time             // Time when the platform began monitoring.
+type PlatformStats struct {
+	BytesWritten      int                       // Total bytes written to disk across all recordings.
+	AvgBytesPerStream int                       // Total average bytes per stream over all recordings.
+	AvgBytesPerSecond int                       // Total average bytes per second over runtime of platform.
+	TotalDuration     float64                   // Total amount of time recorded
+	Recordings        int                       // Total number of live streams recorded.
+	StreamerStats     map[string]*StreamerStats // Individual stats per streamer (string key is username/identifier)
+	StartTime         time.Time                 // Time when the platform began monitoring.
+}
+
+// Historical stats for a single streamer on a platform.
+// Precomputed running averages and other stats for all streams from a single streamer
+type StreamerStats struct {
+	BytesWritten          int     // Total bytes written to disk across all recordings for a streamer.
+	AvgBytesPerStream     int     // Total average bytes per stream over all streams from a streamer.
+	AvgBytesPerSecondLive int     // Total average bytes per second over total duration recorded.
+	AvgBytesPerSecond     int     // Total average bytes per second over total duration both offline & live.
+	TotalDuration         float64 // Total amount of time recorded from a streamer in seconds.
+	FinishedDigests       []hls.RecordingDigest
+	Recordings            int // Total number of live streams recorded / digests.
 }
 
 // Commands that will be sent from a CommandSender to platforms.
@@ -68,25 +82,33 @@ type HistoricalStats struct {
 type CommandType int
 
 const (
-	CmdStatus CommandType = iota
-	CmdConfigReload
+	CmdConfigReload CommandType = iota
 	CmdStats
 )
 
 var CommandNameMap = map[CommandType]string{
-	CmdStatus:       "status",
 	CmdConfigReload: "config-reload",
 	CmdStats:        "stats",
 }
 
-type CmdStatusReturn struct {
-	PlatformName string
-	Digests      []hls.RecordingDigest
+// A streamer and the associated directory paths that their streams will
+// be downloaded into. Probably only going to be used for stats to calculate disk utilization.
+type StreamerTargets struct {
+	Username       string
+	OutputDirPath  string
+	ArchiveDirPath *string
 }
 
 type CmdStatsReturn struct {
-	PlatformName string
-	Stats        HistoricalStats
+	PlatformName    string
+	StreamerTargets []StreamerTargets
+	LiveDigests     []hls.RecordingDigest
+	Stats           PlatformStats
+}
+
+// Optional params to include as the CommandMsg value.
+type CmdStatsParams struct {
+	IncludePastDigests bool // Include all digests from previous recordings that aren't live.
 }
 
 // If a command can take parameters to specify operations, it will be put in Value.
