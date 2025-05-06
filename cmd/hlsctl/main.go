@@ -12,6 +12,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/xel86/hlsdvr/internal/disk"
 	"github.com/xel86/hlsdvr/internal/platform"
 	"github.com/xel86/hlsdvr/internal/server"
 	"github.com/xel86/hlsdvr/internal/util"
@@ -104,7 +105,7 @@ func printDriveTimeStats(targets []platform.StreamerTargets, stats platform.Plat
 		// If a streamer has an archive directory path,
 		// only print estimated time for it, not the output path as well.
 		if t.ArchiveDirPath != nil {
-			aDevice, err := GetDriveIdentifier(*t.ArchiveDirPath)
+			aDevice, err := disk.GetDriveIdentifier(*t.ArchiveDirPath)
 			if err != nil {
 				fmt.Printf("Error getting drive information for an archive path: %v\n", err)
 				continue
@@ -114,7 +115,7 @@ func printDriveTimeStats(targets []platform.StreamerTargets, stats platform.Plat
 			continue
 		}
 
-		oDevice, err := GetDriveIdentifier(t.OutputDirPath)
+		oDevice, err := disk.GetDriveIdentifier(t.OutputDirPath)
 		if err != nil {
 			fmt.Printf("Error getting drive information for an output path: %v\n", err)
 			continue
@@ -162,25 +163,25 @@ func printEstimatedTimePerDrive(
 			basePath = *pathsOnDrive[0].ArchiveDirPath
 		}
 
-		total, _, free, err := GetDriveUtilization(basePath)
+		du, err := disk.GetDriveUtilization(basePath)
 		if err != nil {
 			fmt.Printf("Error getting disk utilization information for %s: %v", basePath, err)
 			continue
 		}
 
-		if total == 0 {
+		if du.TotalBytes == 0 {
 			continue
 		}
 
 		// Calculate seconds until full
-		secondsUntilFull := free / uint64(avgBytesPerSecond)
+		secondsUntilFull := du.FreeBytes / uint64(avgBytesPerSecond)
 		duration := time.Duration(secondsUntilFull) * time.Second
 
 		days := int(math.Floor(duration.Hours() / 24))
 		hours := int(math.Floor(duration.Hours())) % 24
 		minutes := int(math.Floor(duration.Minutes())) % 60
 
-		rootDirPath, err := GetMountPointForPath(basePath)
+		rootDirPath, err := disk.GetMountPointForPath(basePath)
 		if err != nil {
 			fmt.Printf("Error getting mount point for path: %v", err)
 			rootDirPath = driveId
@@ -193,7 +194,7 @@ func printEstimatedTimePerDrive(
 		fmt.Printf("%s: Estimated time till disk full: %dd %dh %dm (%s free)\n",
 			rootDirPath,
 			days, hours, minutes,
-			util.HumanReadableBytes(int(free)))
+			util.HumanReadableBytes(int(du.FreeBytes)))
 	}
 }
 
