@@ -20,11 +20,13 @@ func GetDriveIdentifier(path string) (string, error) {
 }
 
 // Get drive utilization for a path.
-// returned in order:  total bytes, used bytes, free bytes.
+// Total, free, and used bytes.
 func GetDriveUtilization(path string) (DiskUtilization, error) {
 	return getDriveUtilizationImpl(path)
 }
 
+// Get the mount point for a path.
+// The mount point returned will be an absolute path, such as "/mnt/drive" or "/"
 func GetMountPointForPath(path string) (string, error) {
 	return getMountPointForPathImpl(path)
 }
