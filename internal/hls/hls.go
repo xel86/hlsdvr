@@ -82,9 +82,9 @@ type RecordingDigest struct {
 	OutputPath        string
 	RecordingStart    time.Time
 	RecordingDuration float64 // in seconds
-	BytesWritten      int     // bytes written over the entire duration of the recording.
-	BytesPerSecond    int     // calculated over the time of a single TargetDuration (loop iteration) of a recording.
-	AvgBytesPerSecond int     // calculated over the entire duration of the recording.
+	BytesWritten      uint64  // bytes written over the entire duration of the recording.
+	BytesPerSecond    uint64  // calculated over the time of a single TargetDuration (loop iteration) of a recording.
+	AvgBytesPerSecond uint64  // calculated over the entire duration of the recording.
 	Width             int     // resolution width  (1920)
 	Height            int     // resolution height (1080)
 	FrameRate         float64
@@ -359,9 +359,9 @@ func (r *Recorder) Record() (RecordingDigest, error) {
 
 		r.digestMutex.Lock()
 		r.digest.RecordingDuration += totalDuration
-		r.digest.BytesWritten += bytesWritten
-		r.digest.BytesPerSecond = (bytesWritten / playlist.TargetDuration)
-		r.digest.AvgBytesPerSecond = (r.digest.BytesWritten / int(r.digest.RecordingDuration))
+		r.digest.BytesWritten += uint64(bytesWritten)
+		r.digest.BytesPerSecond = uint64(bytesWritten / playlist.TargetDuration)
+		r.digest.AvgBytesPerSecond = (r.digest.BytesWritten / uint64(r.digest.RecordingDuration))
 		r.digest.GracefulEnd = playlist.Ended
 		r.digestMutex.Unlock()
 

@@ -65,6 +65,7 @@ After setting up your configuration file, simply run the `hlsdvr` binary:
 | `-config <path>` | Path to a configuration file to use/create |
 | `-socket <path>` | Path to create unix socket for RPC |
 | `-no-rpc` | Disable the RPC server from running or being used |
+| `-no-persist-stats` | Don't restore or save stats file between hlsdvr instances. |
 | `-debug` | Enable debug log level |
 | `-version` | Get the version of the build |
 

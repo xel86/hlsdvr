@@ -55,9 +55,9 @@ type Platform interface {
 // Historical stats for a platform being monitored.
 // Variables such as BytesWritten are totals, summed incrementally from each additional recording.
 type PlatformStats struct {
-	BytesWritten      int                       // Total bytes written to disk across all recordings.
-	AvgBytesPerStream int                       // Total average bytes per stream over all recordings.
-	AvgBytesPerSecond int                       // Total average bytes per second over runtime of platform.
+	BytesWritten      uint64                    // Total bytes written to disk across all recordings.
+	AvgBytesPerStream uint64                    // Total average bytes per stream over all recordings.
+	AvgBytesPerSecond uint64                    // Total average bytes per second over runtime of platform.
 	TotalDuration     float64                   // Total amount of time recorded
 	Recordings        int                       // Total number of live streams recorded.
 	StreamerStats     map[string]*StreamerStats // Individual stats per streamer (string key is username/identifier)
@@ -67,10 +67,10 @@ type PlatformStats struct {
 // Historical stats for a single streamer on a platform.
 // Precomputed running averages and other stats for all streams from a single streamer
 type StreamerStats struct {
-	BytesWritten          int     // Total bytes written to disk across all recordings for a streamer.
-	AvgBytesPerStream     int     // Total average bytes per stream over all streams from a streamer.
-	AvgBytesPerSecondLive int     // Total average bytes per second over total duration recorded.
-	AvgBytesPerSecond     int     // Total average bytes per second over total duration both offline & live.
+	BytesWritten          uint64  // Total bytes written to disk across all recordings for a streamer.
+	AvgBytesPerStream     uint64  // Total average bytes per stream over all streams from a streamer.
+	AvgBytesPerSecondLive uint64  // Total average bytes per second over total duration recorded.
+	AvgBytesPerSecond     uint64  // Total average bytes per second over total duration both offline & live.
 	TotalDuration         float64 // Total amount of time recorded from a streamer in seconds.
 	FinishedDigests       []hls.RecordingDigest
 	Recordings            int // Total number of live streams recorded / digests.

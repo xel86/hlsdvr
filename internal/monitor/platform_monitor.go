@@ -42,6 +42,21 @@ func NewPlatformMonitor(ctx context.Context,
 	}
 }
 
+func (pm *PlatformMonitor) GetPlatformStats() platform.PlatformStats {
+	pm.statsMutex.RLock()
+	defer pm.statsMutex.RUnlock()
+
+	return pm.stats
+}
+
+// Really only intended to be used when restoring stats from a previous instance/session.
+func (pm *PlatformMonitor) SetPlatformStats(stats platform.PlatformStats) {
+	pm.statsMutex.Lock()
+	defer pm.statsMutex.Unlock()
+
+	pm.stats = stats
+}
+
 func (pm *PlatformMonitor) doPlatformCmdConfigReload(msg platform.CommandMsg) (bool, error) {
 	cfg, ok := msg.Value.(config.Config)
 	if !ok {
@@ -69,7 +84,7 @@ func updateStats(stats *platform.PlatformStats, digest hls.RecordingDigest) {
 	stats.BytesWritten += digest.BytesWritten
 	stats.TotalDuration += digest.RecordingDuration
 	stats.Recordings += 1
-	stats.AvgBytesPerStream = stats.BytesWritten / stats.Recordings
+	stats.AvgBytesPerStream = stats.BytesWritten / uint64(stats.Recordings)
 
 	// per-streamer stats
 	sStats, exists := stats.StreamerStats[digest.Identifier]
@@ -81,9 +96,9 @@ func updateStats(stats *platform.PlatformStats, digest hls.RecordingDigest) {
 	sStats.BytesWritten += digest.BytesWritten
 	sStats.TotalDuration += digest.RecordingDuration
 	sStats.Recordings += 1
-	sStats.AvgBytesPerStream = sStats.BytesWritten / sStats.Recordings
+	sStats.AvgBytesPerStream = sStats.BytesWritten / uint64(sStats.Recordings)
 	if sStats.TotalDuration != 0 {
-		sStats.AvgBytesPerSecondLive = sStats.BytesWritten / int(sStats.TotalDuration)
+		sStats.AvgBytesPerSecondLive = sStats.BytesWritten / uint64(sStats.TotalDuration)
 	}
 	sStats.FinishedDigests = append(sStats.FinishedDigests, digest)
 }
@@ -166,9 +181,9 @@ func (pm *PlatformMonitor) doPlatformCmdStats(msg platform.CommandMsg) {
 	// Calculate average bytes per second for both platform and per-streamer (offline+live time) here.
 	// This is for accuracy as the stats would only be updated after an additional stream has ended
 	// if we calculated them like every other stat.
-	statsCopy.AvgBytesPerSecond = (statsCopy.BytesWritten / int(time.Since(statsCopy.StartTime).Seconds()))
+	statsCopy.AvgBytesPerSecond = (statsCopy.BytesWritten / uint64(time.Since(statsCopy.StartTime).Seconds()))
 	for _, v := range statsCopy.StreamerStats {
-		v.AvgBytesPerSecond = (v.BytesWritten / int(time.Since(statsCopy.StartTime).Seconds()))
+		v.AvgBytesPerSecond = (v.BytesWritten / uint64(time.Since(statsCopy.StartTime).Seconds()))
 	}
 
 	returnMsg := platform.CmdStatsReturn{
@@ -222,8 +237,13 @@ func (pm *PlatformMonitor) StartMonitor() {
 
 	var wg sync.WaitGroup
 
-	pm.stats.StartTime = time.Now()
-	pm.stats.StreamerStats = make(map[string]*platform.StreamerStats)
+	// Initilize stats if there were stats restored from a saved stats file.
+	if pm.stats.BytesWritten == 0 {
+		pm.stats.StartTime = time.Now()
+		if pm.stats.StreamerStats == nil {
+			pm.stats.StreamerStats = make(map[string]*platform.StreamerStats)
+		}
+	}
 
 	// set timer to 1 so that the first loop iteration will start instantly.
 	// reset and wait the platform check interval every time after this.

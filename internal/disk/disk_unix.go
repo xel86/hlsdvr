@@ -4,7 +4,9 @@
 package disk
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +23,10 @@ func getDriveIdentifierImpl(path string) (string, error) {
 
 	var stat unix.Stat_t
 	if err := unix.Stat(absPath, &stat); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+
 		return "", fmt.Errorf("failed to stat path: %w", err)
 	}
 

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func HumanReadableBytes(b int) string {
+func HumanReadableBytes(b uint64) string {
 	bf := float64(b)
 	for _, unit := range []string{"", "Ki", "Mi", "Gi", "Ti"} {
 		if math.Abs(bf) < 1024.0 {

@@ -107,7 +107,9 @@ func printDriveTimeStats(targets []platform.StreamerTargets, stats platform.Plat
 		if t.ArchiveDirPath != nil {
 			aDevice, err := disk.GetDriveIdentifier(*t.ArchiveDirPath)
 			if err != nil {
-				fmt.Printf("Error getting drive information for an archive path: %v\n", err)
+				fmt.Printf("Error getting drive information for archive path %s: %v\n", *t.ArchiveDirPath, err)
+				continue
+			} else if aDevice == "" {
 				continue
 			}
 
@@ -117,7 +119,9 @@ func printDriveTimeStats(targets []platform.StreamerTargets, stats platform.Plat
 
 		oDevice, err := disk.GetDriveIdentifier(t.OutputDirPath)
 		if err != nil {
-			fmt.Printf("Error getting drive information for an output path: %v\n", err)
+			fmt.Printf("Error getting drive information for output path %s: %v\n", t.OutputDirPath, err)
+			continue
+		} else if oDevice == "" {
 			continue
 		}
 		outputDrives[oDevice] = append(outputDrives[oDevice], t)
@@ -142,7 +146,7 @@ func printEstimatedTimePerDrive(
 	outputDrive bool) {
 
 	for driveId, pathsOnDrive := range drives {
-		var totalBytesWritten int
+		var totalBytesWritten uint64
 		for _, target := range pathsOnDrive {
 			sStats, exists := stats.StreamerStats[target.Username]
 			if exists {
@@ -154,7 +158,7 @@ func printEstimatedTimePerDrive(
 			continue
 		}
 
-		avgBytesPerSecond := totalBytesWritten / int(time.Since(stats.StartTime).Seconds())
+		avgBytesPerSecond := totalBytesWritten / uint64(time.Since(stats.StartTime).Seconds())
 
 		var basePath string
 		if outputDrive {
@@ -194,7 +198,7 @@ func printEstimatedTimePerDrive(
 		fmt.Printf("%s: Estimated time till disk full: %dd %dh %dm (%s free)\n",
 			rootDirPath,
 			days, hours, minutes,
-			util.HumanReadableBytes(int(du.FreeBytes)))
+			util.HumanReadableBytes(du.FreeBytes))
 	}
 }
 
@@ -375,7 +379,7 @@ func handleStatus(args []string) {
 				return
 			}
 
-			totalBytesPerSecond := 0
+			var totalBytesPerSecond uint64
 			if *verbose {
 				for _, digest := range v.LiveDigests { // we're iterating this twice but its cleaner than the alternative
 					totalBytesPerSecond += digest.BytesPerSecond

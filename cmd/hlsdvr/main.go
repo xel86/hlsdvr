@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +22,10 @@ import (
 	"github.com/xel86/hlsdvr/internal/util"
 )
 
+const (
+	SavedStatsFileName = "hlsdvr_saved_stats.json"
+)
+
 func createPlatformsFromConfigs(cfg config.Config) ([]platform.Platform, error) {
 	var platforms []platform.Platform
 	if cfg.TwitchConfig != nil {
@@ -34,10 +39,47 @@ func createPlatformsFromConfigs(cfg config.Config) ([]platform.Platform, error) 
 	return platforms, nil
 }
 
+func saveStatsToFile(stats map[string]platform.PlatformStats, path string) error {
+	jsonData, err := json.Marshal(stats)
+	if err != nil {
+		return fmt.Errorf("failed to marshal to json: %v", err)
+	}
+
+	err = os.WriteFile(path, jsonData, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write to file: %v", err)
+	}
+
+	return nil
+}
+
+// returns a valid, but empty, map on error.
+func restoreStatsFromFile(path string) (map[string]platform.PlatformStats, error) {
+	restoredStats := make(map[string]platform.PlatformStats)
+
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return restoredStats, nil
+	}
+
+	fileData, err := os.ReadFile(path)
+	if err != nil {
+		return restoredStats, fmt.Errorf("Failed to read file: %v", err)
+	}
+
+	err = json.Unmarshal(fileData, &restoredStats)
+	if err != nil {
+		restoredStats = make(map[string]platform.PlatformStats) // reset potentially malformed map
+		return restoredStats, fmt.Errorf("Failed to unmarshal json from file: %v", err)
+	}
+
+	return restoredStats, nil
+}
+
 func main() {
 	var cfgPath string
 	var socketPath string
 	var noRpc bool
+	var noPersistStats bool
 	var logDebug bool
 	var showVersion bool
 	var showHelp bool
@@ -61,6 +103,11 @@ func main() {
 		"no-rpc",
 		false,
 		"Don't create or listen on a unix socket for RPC commands.")
+	flag.BoolVar(
+		&noPersistStats,
+		"no-persist-stats",
+		false,
+		"Don't restore or save stats file between daemon instances.")
 	flag.BoolVar(&showHelp, "help", false, "Show help message")
 	flag.BoolVar(&showHelp, "h", false, "Show help message (shorthand)")
 	flag.BoolVar(&showVersion, "version", false, "Show build version")
@@ -154,6 +201,20 @@ func main() {
 		slog.Info("Not starting RPC server due to -no-rpc flag.")
 	}
 
+	savedStatsPath := filepath.Join(filepath.Dir(cfgPath), SavedStatsFileName)
+	restoredStats := make(map[string]platform.PlatformStats)
+
+	if !noPersistStats {
+		restoredStats, err = restoreStatsFromFile(savedStatsPath)
+		if err != nil {
+			slog.Warn(fmt.Sprintf("Failed to restore stats from previous instance: %v", err))
+		} else if len(restoredStats) > 0 {
+			slog.Info(fmt.Sprintf(
+				"Restored saved platform stats file %s from previous instance", savedStatsPath))
+		} // else: there was no stats file available.
+	}
+
+	savedStats := make(map[string]platform.PlatformStats)
 	for _, p := range platforms {
 		wg.Add(1)
 		go func() {
@@ -168,9 +229,33 @@ func main() {
 			}
 
 			pm := monitor.NewPlatformMonitor(ctx, p, ch)
+
+			// Restore stats for this platform if there was a saved stats file
+			// and if the platform was contained in it.
+			stats, exists := restoredStats[p.Name()]
+			if exists {
+				pm.SetPlatformStats(stats)
+			}
+
 			pm.StartMonitor()
+
+			// Once monitoring is done save the stats it accumulated.
+			savedStats[p.Name()] = pm.GetPlatformStats()
 		}()
 	}
 
-	wg.Wait()
+	wg.Wait() // Wait for all platform monitors to be stopped.
+
+	// Save all the accumulated platform stats to a file to be restored
+	// upon running the daemon again.
+	// TODO: an actual full database seems overkill for what we need, is this strategy fine longterm?
+	if !noPersistStats {
+		err = saveStatsToFile(savedStats, savedStatsPath)
+		if err != nil {
+			slog.Error(fmt.Sprintf(
+				"Failed to save platform stats to file to be restored: %v", err))
+		} else {
+			slog.Info(fmt.Sprintf("Saved current platform stats to %s", savedStatsPath))
+		}
+	}
 }

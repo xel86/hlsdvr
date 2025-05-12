@@ -6,6 +6,7 @@ package disk
 import (
 	"fmt"
 	"path/filepath"
+	"syscall"
 
 	"golang.org/x/sys/windows"
 )
@@ -16,14 +17,21 @@ func getDriveIdentifierImpl(path string) (string, error) {
 		return "", err
 	}
 
-	rootPath, err := getMountPointForPathImpl(absPath)
+	pathPtr, err := windows.UTF16PtrFromString(absPath)
 	if err != nil {
-		return "", fmt.Errorf("Failed to root path for path: %w", err)
+		return "", fmt.Errorf("Failed to convert path string to UTF16 pointer: %w", err)
 	}
 
-	pathPtr, err := windows.UTF16PtrFromString(rootPath)
+	var volumePathName [windows.MAX_PATH + 1]uint16
+	err = windows.GetVolumePathName(pathPtr, &volumePathName[0], windows.MAX_PATH)
 	if err != nil {
-		return "", fmt.Errorf("Failed to convert string to UTF16 pointer: %w", err)
+		if syserr, ok := err.(syscall.Errno); ok {
+			if (syserr == windows.ERROR_PATH_NOT_FOUND) || (syserr == windows.ERROR_FILE_NOT_FOUND) {
+				return "", nil
+			}
+		}
+
+		return "", fmt.Errorf("Failed to get volume path name: %w", err)
 	}
 
 	var volumeNameBuffer [windows.MAX_PATH + 1]uint16
@@ -33,7 +41,7 @@ func getDriveIdentifierImpl(path string) (string, error) {
 	var fileSystemNameBuffer [windows.MAX_PATH + 1]uint16
 
 	err = windows.GetVolumeInformation(
-		pathPtr,
+		&volumePathName[0],
 		&volumeNameBuffer[0],
 		windows.MAX_PATH,
 		&volumeSerialNumber,
