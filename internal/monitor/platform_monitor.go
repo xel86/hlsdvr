@@ -237,12 +237,12 @@ func (pm *PlatformMonitor) StartMonitor() {
 
 	var wg sync.WaitGroup
 
-	// Initilize stats if there were stats restored from a saved stats file.
-	if pm.stats.BytesWritten == 0 {
+	// Initilize stats here if they were not restored from a saved stats file.
+	if pm.stats.StartTime.IsZero() {
 		pm.stats.StartTime = time.Now()
-		if pm.stats.StreamerStats == nil {
-			pm.stats.StreamerStats = make(map[string]*platform.StreamerStats)
-		}
+	}
+	if pm.stats.StreamerStats == nil {
+		pm.stats.StreamerStats = make(map[string]*platform.StreamerStats)
 	}
 
 	// set timer to 1 so that the first loop iteration will start instantly.
