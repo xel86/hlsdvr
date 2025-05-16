@@ -274,7 +274,15 @@ func handleStats(args []string) {
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
 
 			for identifer, s := range v.Stats.StreamerStats {
-				fmt.Fprintf(w, "  %s:\t(total: %s / recordings: %d) ~[%s/stream | %s/sec live]\n",
+				liveChar := " "
+				for _, live := range v.LiveDigests {
+					if live.Identifier == identifer {
+						liveChar = "*"
+					}
+				}
+
+				fmt.Fprintf(w, " %s%s:\t(total: %s / recordings: %d) ~[%s/stream | %s/sec live]\n",
+					liveChar,
 					identifer,
 					util.HumanReadableBytes(s.BytesWritten),
 					s.Recordings,
