@@ -67,13 +67,15 @@ type PlatformStats struct {
 // Historical stats for a single streamer on a platform.
 // Precomputed running averages and other stats for all streams from a single streamer
 type StreamerStats struct {
+	Identifier            string  // String that identifies the streamer, usually a username.
 	BytesWritten          uint64  // Total bytes written to disk across all recordings for a streamer.
 	AvgBytesPerStream     uint64  // Total average bytes per stream over all streams from a streamer.
 	AvgBytesPerSecondLive uint64  // Total average bytes per second over total duration recorded.
 	AvgBytesPerSecond     uint64  // Total average bytes per second over total duration both offline & live.
 	TotalDuration         float64 // Total amount of time recorded from a streamer in seconds.
 	FinishedDigests       []hls.RecordingDigest
-	Recordings            int // Total number of live streams recorded / digests.
+	Recordings            int       // Total number of live streams recorded / digests.
+	LatestRecordingStart  time.Time // The latest/newest recording's (live or finished) start time.
 }
 
 // Commands that will be sent from a CommandSender to platforms.

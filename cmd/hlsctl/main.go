@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"runtime/debug"
+	"sort"
 	"text/tabwriter"
 	"time"
 
@@ -23,6 +24,30 @@ var (
 	socketPath     string
 	defaultTimeout = (5 * time.Second)
 )
+
+// SortFlag is a custom flag type that only accepts specific values
+type SortFlag string
+
+const (
+	SortBySize         = "size"
+	SortByLive         = "live"
+	SortByAlphabetical = "alphabetical"
+)
+
+func (s *SortFlag) Set(value string) error {
+	switch value {
+	case SortBySize, SortByLive, SortByAlphabetical:
+		*s = SortFlag(value)
+		return nil
+	default:
+		return fmt.Errorf("sort flag must be one of: %s, %s, %s",
+			SortBySize, SortByLive, SortByAlphabetical)
+	}
+}
+
+func (s *SortFlag) String() string {
+	return string(*s)
+}
 
 func main() {
 	var showHelp bool
@@ -205,6 +230,7 @@ func printEstimatedTimePerDrive(
 func handleStats(args []string) {
 	// Create a new FlagSet for the stats command
 	var tail int
+	var sortBy SortFlag = SortByAlphabetical
 
 	statsCmd := flag.NewFlagSet("stats", flag.ExitOnError)
 	list := statsCmd.Bool("list", false, "Print a list of all the individual streams recorded.")
@@ -214,6 +240,9 @@ func handleStats(args []string) {
 		"tail",
 		0,
 		"Only list this amount of streams recorded for each streamer. (0 = all)")
+	statsCmd.Var(&sortBy,
+		"sort",
+		"Sort streamers in stats list by: size, live, or alphabetical")
 
 	// Parse the flags for only this command
 	statsCmd.Parse(args)
@@ -273,17 +302,38 @@ func handleStats(args []string) {
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
 
-			for identifer, s := range v.Stats.StreamerStats {
+			flat := make([]*platform.StreamerStats, 0, len(v.Stats.StreamerStats))
+			for _, v := range v.Stats.StreamerStats {
+				flat = append(flat, v)
+			}
+
+			switch sortBy {
+			case SortByLive:
+				sort.Slice(flat, func(i, j int) bool {
+					// Sort by start time in descending order (time closest to time.Now() is first/index 0)
+					return flat[i].LatestRecordingStart.After(flat[j].LatestRecordingStart)
+				})
+			case SortBySize:
+				sort.Slice(flat, func(i, j int) bool {
+					return flat[i].BytesWritten > flat[j].BytesWritten
+				})
+			case SortByAlphabetical:
+				sort.Slice(flat, func(i, j int) bool {
+					return flat[i].Identifier < flat[j].Identifier
+				})
+			}
+
+			for _, s := range flat {
 				liveChar := " "
 				for _, live := range v.LiveDigests {
-					if live.Identifier == identifer {
+					if live.Identifier == s.Identifier {
 						liveChar = "*"
 					}
 				}
 
 				fmt.Fprintf(w, " %s%s:\t(total: %s / recordings: %d) ~[%s/stream | %s/sec live]\n",
 					liveChar,
-					identifer,
+					s.Identifier,
 					util.HumanReadableBytes(s.BytesWritten),
 					s.Recordings,
 					util.HumanReadableBytes(s.AvgBytesPerStream),

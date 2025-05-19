@@ -89,7 +89,7 @@ func updateStats(stats *platform.PlatformStats, digest hls.RecordingDigest) {
 	// per-streamer stats
 	sStats, exists := stats.StreamerStats[digest.Identifier]
 	if !exists {
-		sStats = &platform.StreamerStats{}
+		sStats = &platform.StreamerStats{Identifier: digest.Identifier}
 		stats.StreamerStats[digest.Identifier] = sStats
 	}
 
@@ -100,6 +100,7 @@ func updateStats(stats *platform.PlatformStats, digest hls.RecordingDigest) {
 	if sStats.TotalDuration != 0 {
 		sStats.AvgBytesPerSecondLive = sStats.BytesWritten / uint64(sStats.TotalDuration)
 	}
+	sStats.LatestRecordingStart = digest.RecordingStart
 	sStats.FinishedDigests = append(sStats.FinishedDigests, digest)
 }
 
@@ -161,12 +162,14 @@ func (pm *PlatformMonitor) doPlatformCmdStats(msg platform.CommandMsg) {
 		}
 
 		statsCopy.StreamerStats[username] = &platform.StreamerStats{
+			Identifier:            stats.Identifier,
 			BytesWritten:          stats.BytesWritten,
 			AvgBytesPerStream:     stats.AvgBytesPerStream,
 			AvgBytesPerSecondLive: stats.AvgBytesPerSecondLive,
 			AvgBytesPerSecond:     stats.AvgBytesPerSecond,
 			TotalDuration:         stats.TotalDuration,
 			Recordings:            stats.Recordings,
+			LatestRecordingStart:  stats.LatestRecordingStart,
 			FinishedDigests:       digestsCopy,
 		}
 	}

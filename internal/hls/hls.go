@@ -109,7 +109,7 @@ func GetM3U8PlaylistData(httpClient *http.Client, url string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("error, received status code %v: %v",
-			resp.StatusCode, string(body))
+			resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
