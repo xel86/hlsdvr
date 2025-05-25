@@ -294,10 +294,6 @@ loop:
 				continue
 			}
 
-			// TODO: make the filename template configurable?
-			fileName := fmt.Sprintf("%s-%s.ts", liveStreamer.Username(), time.Now().Format("20060102_150405"))
-			outputPath := filepath.Join(liveStreamer.GetOutputDirPath(), fileName)
-
 			// TODO: probably want a secondary context to stop recording this specific stream,
 			// 	     on top of the global context.
 			recorder := hls.NewRecorder(
@@ -305,7 +301,7 @@ loop:
 				liveStreamer.Username(),
 				&http.Client{Timeout: 5 * time.Second},
 				hlsStream,
-				outputPath)
+				liveStreamer.GetOutputDirPath())
 
 			pm.recordingMap[liveStreamer.UniqueID()] = recorder
 
@@ -351,7 +347,8 @@ loop:
 				// If an archive dir path has been set in the config for either the top, platform, or streamer level,
 				// move the finished downloaded stream file into the archive directory.
 				if liveStreamer.GetArchiveDirPath() != nil {
-					err := util.MoveFile(outputPath, *liveStreamer.GetArchiveDirPath(), fileName)
+					fileName := filepath.Base(digest.OutputPath)
+					err := util.MoveFile(digest.OutputPath, *liveStreamer.GetArchiveDirPath(), fileName)
 					if err != nil {
 						slog.Error(fmt.Sprintf("(%s) error moving recording %s into archive %s",
 							pm.platform.Name(), fileName, *liveStreamer.GetArchiveDirPath()))

@@ -382,7 +382,7 @@ func (c *APIClient) getPlaybackAccessToken(userLogin string) (*StreamPlaybackAcc
 			"login":      userLogin,
 			"isVod":      false,
 			"vodID":      "",
-			"playerType": "embed",
+			"playerType": "site",
 		},
 		"extensions": map[string]any{
 			"persistedQuery": map[string]any{
@@ -442,10 +442,13 @@ func makeUsherM3U8PlaylistUrl(userLogin string, token *StreamPlaybackAccessToken
 	params.Add("token", token.Value)
 	params.Add("allow_source", "true")
 	params.Add("fast_bread", "true")
-	params.Add("player", "twitchweb")
+	params.Add("player_backend", "mediaplayer")
 	params.Add("p", strconv.Itoa(rand.IntN(999999))) // no clue what this does just referencing streamlink
-	params.Add("type", "any")
-	params.Add("allow_spectre", "false")
+
+	// Needed to support streams with "enhanced" broadcasting.
+	// (higher than 1080p, such as 1440p, multiple codecs)
+	params.Add("supported_codecs", "av1,h265,h264")
+	params.Add("platform", "web")
 
 	// Prefetch HLS segments, attempting to always record as much stream as possible
 	// in the event of an unintended end to a stream.

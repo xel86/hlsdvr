@@ -6,8 +6,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -29,7 +31,8 @@ type M3U8StreamVariant struct {
 
 // A m3u8 media playlist with multiple links to downloadable segments to a live stream
 type M3U8MediaPlaylist struct {
-	TargetDuration     int // In seconds
+	HeaderUrl          string // for fragmented mpeg-4 stream playlists (av1/hevc) to initialize mp4
+	TargetDuration     int    // In seconds
 	MediaSequenceStart int
 	Segments           []M3U8Segment
 	Ended              bool
@@ -56,11 +59,11 @@ type SegmentData struct {
 }
 
 type Recorder struct {
-	ctx        context.Context
-	identifier string // string to help identify what this recorder is recording in logs
-	httpClient *http.Client
-	url        string
-	outputPath string
+	ctx           context.Context
+	identifier    string // string to help identify what this recorder is recording in logs
+	httpClient    *http.Client
+	url           string
+	outputDirPath string
 
 	// m3u8 media playlists are "sliding" when live; the oldest segments get pushed out when new ones come in.
 	// This means between two checks for the same media playlist, there may be overlapping segments.
@@ -213,30 +216,25 @@ func sortStreamVariants(variants []M3U8StreamVariant) {
 	})
 }
 
-func NewRecorder(ctx context.Context, identifer string,
-	httpClient *http.Client, hlsStream M3U8StreamVariant, outputPath string) *Recorder {
+func NewRecorder(ctx context.Context, identifier string,
+	httpClient *http.Client, hlsStream M3U8StreamVariant, outputDirPath string) *Recorder {
 	return &Recorder{
 		ctx:            ctx,
-		identifier:     identifer,
+		identifier:     identifier,
 		httpClient:     httpClient,
 		url:            hlsStream.Url,
-		outputPath:     outputPath,
+		outputDirPath:  outputDirPath,
 		lastSeenSeqNum: 0,
 		digest: RecordingDigest{
-			OutputPath: outputPath,
-			Width:      hlsStream.Width,
-			Height:     hlsStream.Height,
-			FrameRate:  hlsStream.FrameRate,
+			Width:     hlsStream.Width,
+			Height:    hlsStream.Height,
+			FrameRate: hlsStream.FrameRate,
 		},
 	}
 }
 
 func (r *Recorder) Record() (RecordingDigest, error) {
-	outFile, err := os.Create(r.outputPath)
-	if err != nil {
-		return r.digest, fmt.Errorf("error creating initial file (%s): %v", r.outputPath, err)
-	}
-	defer outFile.Close()
+	var outFile *os.File
 
 	r.digest.Identifier = r.identifier
 	r.digest.RecordingStart = time.Now()
@@ -249,7 +247,6 @@ func (r *Recorder) Record() (RecordingDigest, error) {
 	// We will allow a single retry for any failures related to getting or parsing the m3u8 playlist.
 	// If we fail to parse or get the playlist two times in a row we will stop the recording with an error.
 	retry := true
-	iterations := 0
 	for {
 		if r.ctx.Err() != nil {
 			return r.digest, nil
@@ -283,6 +280,59 @@ func (r *Recorder) Record() (RecordingDigest, error) {
 		// then the specification asks to wait for one-half the target duration before retrying?
 		// https://datatracker.ietf.org/doc/html/rfc8216#section-6.3.4
 		ticker := time.NewTicker(time.Duration(playlist.TargetDuration) * time.Second)
+
+		// Create the initial output file, grabbing the file extension to use from the playlist.
+		var ext string
+		if outFile == nil {
+			if len(playlist.Segments) == 0 {
+				slog.Warn(fmt.Sprintf(
+					"(hls) %s: no media segments found in successfully fetch & parsed playlist",
+					r.identifier))
+				continue
+			}
+
+			// Get the file extension from one of the media segment urls to use for output file extension.
+			// .ts for transport mpeg-2 streams, .mp4 for fragmented mpeg-4 streams, etc.
+			segmentUrl, err := url.Parse(playlist.Segments[0].Url)
+			if err != nil {
+				slog.Warn(fmt.Sprintf(
+					"(hls) %s: error parsing url from first media segment to get file extension: (%v)",
+					r.identifier, err))
+				ext = ".ts"
+			} else {
+				ext = path.Ext(segmentUrl.Path)
+				if ext == "" {
+					ext = ".ts"
+				}
+			}
+
+			// TODO: make time format string configurable
+			fileName := fmt.Sprintf("%s-%s%s", r.identifier, time.Now().Format("20060102_150405"), ext)
+			outputPath := filepath.Join(r.outputDirPath, fileName)
+
+			outFile, err = os.Create(outputPath)
+			if err != nil {
+				return r.digest, fmt.Errorf("error creating initial file (%s): %v", r.digest.OutputPath, err)
+			}
+			defer outFile.Close()
+
+			r.digest.OutputPath = outputPath
+		}
+
+		// Write the file header for fragmented mpeg-4 streams (av1/hevc mp4)
+		// but only if it would properly be at the start of the file.
+		if r.digest.BytesWritten == 0 && playlist.HeaderUrl != "" {
+			headerBytes, err := r.getSegment(playlist.HeaderUrl)
+			n, err := outFile.Write(headerBytes)
+			if err != nil {
+				return r.digest, fmt.Errorf("Error writing initial media file header: %v", err)
+			}
+			r.digest.BytesWritten += uint64(n)
+		} else if r.digest.BytesWritten == 0 && ext == ".mp4" {
+			slog.Warn(fmt.Sprintf(
+				"(hls) %s: A header file was not found in the playlist for a mp4 stream, recording may be unplayable.",
+				r.identifier))
+		}
 
 		// Discard any segments from the window we have already attempted to download on previous playlist reloads.
 		nextNewSegmentIdx := 0
@@ -337,13 +387,12 @@ func (r *Recorder) Record() (RecordingDigest, error) {
 			i += copy(combinedSegments[i:], s.Data.Bytes)
 		}
 
-		bytesWritten := 0
 		if len(combinedSegments) > 0 {
 			n, err := outFile.Write(combinedSegments)
 			if err != nil {
 				return r.digest, fmt.Errorf("Error writing media segment data to file: %v", err)
 			}
-			bytesWritten = n
+			r.digest.BytesWritten += uint64(n)
 		}
 
 		// If we made it through a loop with no errors reset the retry flag
@@ -355,12 +404,9 @@ func (r *Recorder) Record() (RecordingDigest, error) {
 				r.identifier))
 		}
 
-		iterations++
-
 		r.digestMutex.Lock()
 		r.digest.RecordingDuration += totalDuration
-		r.digest.BytesWritten += uint64(bytesWritten)
-		r.digest.BytesPerSecond = uint64(bytesWritten / playlist.TargetDuration)
+		r.digest.BytesPerSecond = (r.digest.BytesWritten / uint64(playlist.TargetDuration))
 		r.digest.AvgBytesPerSecond = (r.digest.BytesWritten / uint64(r.digest.RecordingDuration))
 		r.digest.GracefulEnd = playlist.Ended
 		r.digestMutex.Unlock()
@@ -397,11 +443,16 @@ func (r *Recorder) downloadSegmentsData(segments []M3U8Segment) error {
 
 			// If getting a segment fails twice,
 			// consider the segment faulty and will just be missing in the recording.
-			err := r.getSegment(segment)
-			if err != nil {
+			// cascading if/else like this is ugly but whatever
+			bytes, err := r.getSegment(segment.Url)
+			if err == nil {
+				segment.Data.Bytes = bytes
+			} else {
 				time.Sleep(1 * time.Second) // Arbitrary 1 second sleep in hope that the url fixes itself in that time.
-				err2 := r.getSegment(segment)
-				if err2 != nil {
+				bytes2, err2 := r.getSegment(segment.Url)
+				if err2 == nil {
+					segment.Data.Bytes = bytes2
+				} else {
 					segment.Data.Err = fmt.Errorf("(%d): %v", segment.MediaSequenceNum, err2)
 					errChan <- true
 				}
@@ -422,27 +473,23 @@ func (r *Recorder) downloadSegmentsData(segments []M3U8Segment) error {
 }
 
 // Fetch the segment media data from the segment's url and place it in the segment's data byte array.
-// The reason it doesn't just return a byte array is to make it easy to keep segments in order
-// while spliting the downloads to multiple goroutines.
-func (r *Recorder) getSegment(segment M3U8Segment) error {
-	resp, err := r.httpClient.Get(segment.Url)
+func (r *Recorder) getSegment(url string) ([]byte, error) {
+	resp, err := r.httpClient.Get(url)
 	if err != nil {
-		return fmt.Errorf("%s", util.TruncateUrlsFromString(err.Error()))
+		return nil, fmt.Errorf("%s", util.TruncateUrlsFromString(err.Error()))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP error: %s", resp.Status)
+		return nil, fmt.Errorf("HTTP error: %s", resp.Status)
 	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("Failed to read response body: %v", err)
+		return nil, fmt.Errorf("Failed to read response body: %v", err)
 	}
 
-	segment.Data.Bytes = data
-
-	return nil
+	return data, nil
 }
 
 func (r *Recorder) GetCurrentDigest() RecordingDigest {
@@ -459,7 +506,7 @@ func (r *Recorder) GetCurrentDigest() RecordingDigest {
 func parseM3U8MediaPlaylist(playlistData string) (M3U8MediaPlaylist, error) {
 	var playlist M3U8MediaPlaylist
 	var segment M3U8Segment
-	var isUrlNext bool
+	var isSegmentUrlNext bool
 
 	lines := strings.SplitSeq(playlistData, "\n")
 
@@ -473,8 +520,8 @@ func parseM3U8MediaPlaylist(playlistData string) (M3U8MediaPlaylist, error) {
 		// Hit after a #EXTINF tag was seen in the previous loop iteration
 		// Set the url for the media download, and compute the media sequence number
 		// based on this segments position in the playlist.
-		if isUrlNext {
-			isUrlNext = false
+		if isSegmentUrlNext {
+			isSegmentUrlNext = false
 			segment.Url = line
 			segment.MediaSequenceNum = playlist.MediaSequenceStart + len(playlist.Segments)
 			segment.Data = &SegmentData{}
@@ -492,11 +539,22 @@ func parseM3U8MediaPlaylist(playlistData string) (M3U8MediaPlaylist, error) {
 		}
 
 		if strings.HasPrefix(line, "#EXT-X-MEDIA-SEQUENCE:") {
-			v, err := strconv.Atoi(line[22:]) // 22 = len("#EXT-X-MEDIA-SEQUENCE")
+			v, err := strconv.Atoi(line[22:]) // 22 = len("#EXT-X-MEDIA-SEQUENCE:")
 			if err != nil {
 				return M3U8MediaPlaylist{}, fmt.Errorf("error parsing media sequence value %v", err)
 			}
 			playlist.MediaSequenceStart = v
+			continue
+		}
+
+		if strings.HasPrefix(line, "#EXT-X-MAP:") {
+			headerUrl := line[11:] // 11 = len("#EXT-X-MAP:")
+
+			// Remove URI= prefix and surrounding quotes if they exist
+			headerUrl = strings.TrimPrefix(headerUrl, "URI=")
+			headerUrl = strings.Trim(headerUrl, `"`)
+
+			playlist.HeaderUrl = headerUrl
 			continue
 		}
 
@@ -515,7 +573,7 @@ func parseM3U8MediaPlaylist(playlistData string) (M3U8MediaPlaylist, error) {
 			if len(segDurationMatch) >= 2 {
 				segment.Duration, _ = strconv.ParseFloat(segDurationMatch[1], 64)
 			}
-			isUrlNext = true
+			isSegmentUrlNext = true
 			continue
 		}
 
