@@ -348,12 +348,13 @@ loop:
 				// move the finished downloaded stream file into the archive directory.
 				if liveStreamer.GetArchiveDirPath() != nil {
 					fileName := filepath.Base(digest.OutputPath)
+
+					slog.Info(fmt.Sprintf("(%s) moving recording %s into %s",
+						pm.platform.Name(), fileName, *liveStreamer.GetArchiveDirPath()))
+
 					err := util.MoveFile(digest.OutputPath, *liveStreamer.GetArchiveDirPath(), fileName)
 					if err != nil {
 						slog.Error(fmt.Sprintf("(%s) error moving recording %s into archive %s",
-							pm.platform.Name(), fileName, *liveStreamer.GetArchiveDirPath()))
-					} else {
-						slog.Info(fmt.Sprintf("(%s) moved recording %s into %s",
 							pm.platform.Name(), fileName, *liveStreamer.GetArchiveDirPath()))
 					}
 				}
