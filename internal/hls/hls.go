@@ -252,6 +252,7 @@ func (r *Recorder) Record() (RecordingDigest, error) {
 			return r.digest, nil
 		}
 
+		bytesThisIter := 0
 		playlistData, err := GetM3U8PlaylistData(r.httpClient, r.url)
 		if err != nil {
 			if retry {
@@ -327,7 +328,7 @@ func (r *Recorder) Record() (RecordingDigest, error) {
 			if err != nil {
 				return r.digest, fmt.Errorf("Error writing initial media file header: %v", err)
 			}
-			r.digest.BytesWritten += uint64(n)
+			bytesThisIter += n
 		} else if r.digest.BytesWritten == 0 && ext == ".mp4" {
 			slog.Warn(fmt.Sprintf(
 				"(hls) %s: A header file was not found in the playlist for a mp4 stream, recording may be unplayable.",
@@ -392,7 +393,7 @@ func (r *Recorder) Record() (RecordingDigest, error) {
 			if err != nil {
 				return r.digest, fmt.Errorf("Error writing media segment data to file: %v", err)
 			}
-			r.digest.BytesWritten += uint64(n)
+			bytesThisIter += n
 		}
 
 		// If we made it through a loop with no errors reset the retry flag
@@ -406,7 +407,8 @@ func (r *Recorder) Record() (RecordingDigest, error) {
 
 		r.digestMutex.Lock()
 		r.digest.RecordingDuration += totalDuration
-		r.digest.BytesPerSecond = (r.digest.BytesWritten / uint64(playlist.TargetDuration))
+		r.digest.BytesWritten += uint64(bytesThisIter)
+		r.digest.BytesPerSecond = uint64(bytesThisIter / playlist.TargetDuration)
 		r.digest.AvgBytesPerSecond = (r.digest.BytesWritten / uint64(r.digest.RecordingDuration))
 		r.digest.GracefulEnd = playlist.Ended
 		r.digestMutex.Unlock()
