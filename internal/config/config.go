@@ -103,9 +103,9 @@ func GenerateDefaultExampleConfig(cfgPath string) error {
 			UserToken:         "",
 			CheckLiveInterval: 10,
 			Streamers: []twitch.StreamerConfig{
-				twitch.StreamerConfig{UserLogin: "streamers-username"},
-				twitch.StreamerConfig{UserID: "0"},
-				twitch.StreamerConfig{
+				{UserLogin: "streamers-username"},
+				{UserID: "0"},
+				{
 					UserLogin: "streamers-username", UserID: "0",
 					OutputDirPath:  &exampleStreamerOutputDir,
 					ArchiveDirPath: &exampleStreamerArchiveDir},

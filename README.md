@@ -142,8 +142,8 @@ Check the `configs/` folder in the project repository for various config file ex
 | `unix_socket_path` | string | No | Custom path for the unix socket to be created too for RPC |
 | `remux` | string* | No | Remux recordings from one video container to another. (**Requires FFmpeg**). |
 
-\* The remux string value must be in the format: "source1,source2:target".
- eg: "ts:mkv" or "ts,mp4:mkv" or "any:mp4", etc.
+\* The remux string value must be in the format: "source1,source2:target".\
+ eg: "ts:mkv" or "ts,mp4:mkv" or "any:mp4", etc.\
  the "any" source will remux any recording to the target container specified.
 
 #### Twitch Platform Options

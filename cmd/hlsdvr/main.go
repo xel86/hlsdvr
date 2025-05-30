@@ -168,6 +168,7 @@ func main() {
 		return
 	}
 
+	slog.Info(fmt.Sprintf("Using config file %s", cfgPath))
 	cfg, err := config.ReadConfig(cfgPath)
 	if err != nil {
 		slog.Error(fmt.Sprintf("Error reading config (%s): %v", cfgPath, err))
