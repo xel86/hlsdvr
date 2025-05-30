@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,18 +28,22 @@ type PlatformMonitor struct {
 	recordingMap      map[string]*hls.Recorder
 	recordingMapMutex sync.Mutex
 
+	remuxCfg *config.RemuxCfg
+
 	stats      platform.PlatformStats
 	statsMutex sync.RWMutex
 }
 
-func NewPlatformMonitor(ctx context.Context,
-	p platform.Platform, cmdMsgChan <-chan platform.CommandMsg) *PlatformMonitor {
+func NewPlatformMonitor(ctx context.Context, p platform.Platform,
+	cmdMsgChan <-chan platform.CommandMsg,
+	remuxCfg *config.RemuxCfg) *PlatformMonitor {
 	recordingMap := make(map[string]*hls.Recorder)
 	return &PlatformMonitor{
 		platform:     p,
 		ctx:          ctx,
 		cmdMsgChan:   cmdMsgChan,
 		recordingMap: recordingMap,
+		remuxCfg:     remuxCfg,
 	}
 }
 
@@ -338,6 +343,47 @@ loop:
 				} else {
 					slog.Info(fmt.Sprintf("(%s) recording for %s ended abruptly %s",
 						pm.platform.Name(), liveStreamer.Username(), hls.DigestFileInfoString(digest)))
+				}
+
+				// Remux the recording file into a different video container if configured.
+				if pm.remuxCfg != nil {
+					sourceExt := filepath.Ext(digest.OutputPath)
+					_, exists := pm.remuxCfg.SourceContainers[sourceExt]
+					doRemux := (pm.remuxCfg.RemuxAny || exists) && (sourceExt != pm.remuxCfg.TargetContainer)
+					if doRemux {
+						destPath := strings.TrimSuffix(digest.OutputPath, filepath.Ext(digest.OutputPath)) +
+							pm.remuxCfg.TargetContainer
+
+						slog.Info(fmt.Sprintf("(%s) remuxing recording %s to %s",
+							pm.platform.Name(), filepath.Base(digest.OutputPath), pm.remuxCfg.TargetContainer))
+						n, err := util.RemuxFile(digest.OutputPath, destPath)
+						if err != nil {
+							slog.Error(fmt.Sprintf("(%s) failed to remux recording %s to %s, keeping original: %v.",
+								pm.platform.Name(), filepath.Base(digest.OutputPath), pm.remuxCfg.TargetContainer, err))
+							// If the remux failed (due to an ffmpeg failure or it failed to "validate")
+							// remove a potentially leftover output file.
+							err = os.Remove(destPath)
+							if err != nil {
+								if !os.IsNotExist(err) {
+									slog.Error(fmt.Sprintf(
+										"(%s) failed to remove a output file %s after a failed remux: %v",
+										pm.platform.Name(), destPath, err))
+								}
+							}
+						} else {
+							// Remove the original source file if there were no ffmpeg errors, the remuxed file exists,
+							// and it was within +-20% of the original source file in size.
+							err = os.Remove(digest.OutputPath)
+							if err != nil {
+								slog.Error(fmt.Sprintf(
+									"(%s) failed to remove original source file %s after successful remux: %v",
+									pm.platform.Name(), digest.OutputPath, err))
+							}
+						}
+						digest.OutputPath = destPath
+						digest.BytesWritten = n
+						digest.AvgBytesPerSecond = (n / uint64(digest.RecordingDuration))
+					}
 				}
 
 				pm.statsMutex.Lock()

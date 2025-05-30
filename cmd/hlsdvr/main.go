@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
@@ -80,6 +81,7 @@ func main() {
 	var socketPath string
 	var noRpc bool
 	var noPersistStats bool
+	var remuxStr string
 	var logDebug bool
 	var showVersion bool
 	var showHelp bool
@@ -108,6 +110,13 @@ func main() {
 		"no-persist-stats",
 		false,
 		"Don't restore or save stats file between daemon instances.")
+	flag.StringVar(
+		&remuxStr,
+		"remux",
+		"",
+		"Remux recordings from one video container to another. (Requires ffmpeg!) \n"+
+			"Format: \"source1,source2:target\"\n"+
+			"eg: \"ts:mkv\" \"ts,mp4:mkv\" \"any:mp4\" etc.")
 	flag.BoolVar(&showHelp, "help", false, "Show help message")
 	flag.BoolVar(&showHelp, "h", false, "Show help message (shorthand)")
 	flag.BoolVar(&showVersion, "version", false, "Show build version")
@@ -172,6 +181,33 @@ func main() {
 		}
 	}
 
+	// Override the config remux string if the remux flag was passed in.
+	if !util.IsFlagPassed("remux") {
+		if cfg.RemuxStr != nil {
+			remuxStr = *cfg.RemuxStr
+		}
+	}
+
+	var remuxCfg *config.RemuxCfg
+	if remuxStr != "" {
+		// check if ffmpeg is available.
+		ffmpegPath, err := exec.LookPath("ffmpeg")
+		if err != nil {
+			slog.Warn("ffmpeg is not available from PATH despite a remux argument being provided. Not remuxing.")
+		} else {
+			remuxCfg, err = config.MakeRemuxCfgFromStr(remuxStr)
+			if err != nil {
+				slog.Error(fmt.Sprintf("error making remux configuration from remux string: %v. "+
+					"Ignoring and not remuxing.", err))
+				remuxCfg = nil
+			} else {
+				slog.Info(fmt.Sprintf(
+					"Using ffmpeg binary %s to remux recordings with valid remux string: '%s'",
+					ffmpegPath, remuxStr))
+			}
+		}
+	}
+
 	platforms, err := createPlatformsFromConfigs(cfg)
 	if err != nil {
 		slog.Error(fmt.Sprintf("Failed to create initial platforms from config: %v", err))
@@ -228,7 +264,7 @@ func main() {
 				return
 			}
 
-			pm := monitor.NewPlatformMonitor(ctx, p, ch)
+			pm := monitor.NewPlatformMonitor(ctx, p, ch, remuxCfg)
 
 			// Restore stats for this platform if there was a saved stats file
 			// and if the platform was contained in it.

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/xel86/hlsdvr/internal/platform"
 	"github.com/xel86/hlsdvr/internal/platform/twitch"
@@ -17,10 +19,13 @@ const (
 )
 
 type Config struct {
-	OutputDirPath  string         `json:"output_dir_path"`
-	ArchiveDirPath *string        `json:"archive_dir_path,omitempty"`
-	UnixSocketPath *string        `json:"unix_socket_path,omitempty"`
-	TwitchConfig   *twitch.Config `json:"twitch"`
+	OutputDirPath  string  `json:"output_dir_path"`
+	ArchiveDirPath *string `json:"archive_dir_path,omitempty"`
+	UnixSocketPath *string `json:"unix_socket_path,omitempty"`
+	RemuxStr       *string `json:"remux"`
+
+	// Platform configs
+	TwitchConfig *twitch.Config `json:"twitch"`
 
 	// Path to this config file.
 	// Only set once a config has been read without error.
@@ -31,6 +36,20 @@ type Config struct {
 	// cfg.PlatformCfgMap["twitch"] -> cfg.TwitchConfig
 	// Enables more generic platform logic code later on for config reloading.
 	PlatformCfgMap map[string]any `json:"-"`
+}
+
+// Remux any source files with the containers in SourceContainers into
+// the container specificed by TargetContainer.
+// Example: SourceContainers: ["ts", "mp4"] TargetContainer: "mkv"
+// Is to convert any recordings that are output with .ts  or .mp4 extension to .mkv
+// A RemuxCfg struct is made from a remux string with a format of "source1,source2:target"
+// such as "ts,mp4:mkv"
+// If the "any" source is passed in, RemuxAny will be true and it will be checked first
+// before looking into the SourceContainers map, remuxing any extension into the target if true.
+type RemuxCfg struct {
+	RemuxAny         bool // special case if "any:<target>" is passed in
+	SourceContainers map[string]struct{}
+	TargetContainer  string
 }
 
 func ReadConfig(path string) (Config, error) {
@@ -131,4 +150,66 @@ func ensureDirectory(path string) error {
 	}
 
 	return fmt.Errorf("error checking path: %v", err)
+}
+
+func MakeRemuxCfgFromStr(remuxStr string) (*RemuxCfg, error) {
+	rc := RemuxCfg{}
+
+	// Expected format: "ts,mp4:mkv" or "ts:mp4"
+	parts := strings.Split(remuxStr, ":")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid format: expected 'ext1,ext2:target' but got '%s'", remuxStr)
+	}
+
+	sourceStr := strings.TrimSpace(parts[0])
+	targetStr := strings.TrimSpace(parts[1])
+
+	if sourceStr == "" {
+		return nil, fmt.Errorf("source extension(s) cannot be empty")
+	}
+
+	if targetStr == "" {
+		return nil, fmt.Errorf("target extension cannot be empty")
+	}
+
+	sources := make(map[string]struct{})
+
+	// Parse source extensions (split by comma)
+	sourceExts := strings.Split(sourceStr, ",")
+	for _, ext := range sourceExts {
+		ext = strings.TrimSpace(ext)
+
+		// "any" source special case
+		if ext == "any" {
+			rc.RemuxAny = true
+			if len(sourceExts) != 1 {
+				slog.Warn("Remux argument contains more than one source despite having \"any\" keyword. " +
+					"Remuxing any container.")
+			}
+			break
+		}
+
+		// Add dot prefix if not present
+		if !strings.HasPrefix(ext, ".") {
+			ext = "." + ext
+		}
+		sources[ext] = struct{}{}
+	}
+
+	// Parse target extension
+	targetExt := strings.TrimSpace(targetStr)
+	if !strings.HasPrefix(targetExt, ".") {
+		targetExt = "." + targetExt
+	}
+
+	if strings.Contains(targetExt, ",") {
+		return nil,
+			fmt.Errorf("target extension must contain only a single target container, but got: '%s'",
+				targetExt)
+	}
+
+	rc.SourceContainers = sources
+	rc.TargetContainer = targetExt
+
+	return &rc, nil
 }

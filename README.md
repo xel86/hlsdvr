@@ -56,6 +56,9 @@ After setting up your configuration file, simply run the `hlsdvr` binary:
 
 # Run with custom configuration path & socket path
 ./hlsdvr -config /path/to/config.json -socket /path/to/unix.sock
+
+# Automatically remux (lossless conversion) recordings from .ts (MPEG transport) to .mkv
+./hlsdvr -remux "ts:mkv"
 ```
 
 ### Command-line Arguments
@@ -66,6 +69,7 @@ After setting up your configuration file, simply run the `hlsdvr` binary:
 | `-socket <path>` | Path to create unix socket for RPC |
 | `-no-rpc` | Disable the RPC server from running or being used |
 | `-no-persist-stats` | Don't restore or save stats file between hlsdvr instances. |
+| `-remux <string>` | Remux recordings from one video container to another. (**Requires FFmpeg**). |
 | `-debug` | Enable debug log level |
 | `-version` | Get the version of the build |
 
@@ -136,6 +140,11 @@ Check the `configs/` folder in the project repository for various config file ex
 | `output_dir_path` | string | Yes | Base directory for all recordings |
 | `archive_dir_path` | string | No | Base directory for recordings to be moved to once completed |
 | `unix_socket_path` | string | No | Custom path for the unix socket to be created too for RPC |
+| `remux` | string* | No | Remux recordings from one video container to another. (**Requires FFmpeg**). |
+
+\* The remux string value must be in the format: "source1,source2:target".
+ eg: "ts:mkv" or "ts,mp4:mkv" or "any:mp4", etc.
+ the "any" source will remux any recording to the target container specified.
 
 #### Twitch Platform Options
 
