@@ -142,10 +142,18 @@ func handleRpcClient(conn net.Conn, pcs *platform.CommandSender) {
 	}
 }
 
-func RpcServer(ctx context.Context, pcs *platform.CommandSender, socketPath string) error {
+func RpcServer(ctx context.Context, pcs *platform.CommandSender,
+	socketPath string, deleteOldSocket bool) error {
 	if _, err := os.Stat(socketPath); err == nil {
-		if err := os.Remove(socketPath); err != nil {
-			return fmt.Errorf("Failed to remove old existing socket file: %v", err)
+		if deleteOldSocket {
+			if err := os.Remove(socketPath); err != nil {
+				return fmt.Errorf("Failed to remove old existing socket file: %v", err)
+			}
+		} else {
+			return fmt.Errorf("socket %s already exists. "+
+				"This probably means another instance of hlsdvr is running. "+
+				"If you are sure this is not the case, please remove the file and restart the daemon"+
+				"or provide a custom -socket flag for a second hlsdvr instance.", socketPath)
 		}
 	}
 

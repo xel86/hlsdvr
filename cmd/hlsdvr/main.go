@@ -80,6 +80,7 @@ func main() {
 	var cfgPath string
 	var socketPath string
 	var noRpc bool
+	var deleteOldSocket bool
 	var noPersistStats bool
 	var remuxStr string
 	var logDebug bool
@@ -105,6 +106,12 @@ func main() {
 		"no-rpc",
 		false,
 		"Don't create or listen on a unix socket for RPC commands.")
+	flag.BoolVar(
+		&deleteOldSocket,
+		"delete-old-socket",
+		false,
+		"Delete any pre-existing socket file that exists at the socket path on launch. \n"+
+			"Only useful in the rare event of a non-graceful shutdown.")
 	flag.BoolVar(
 		&noPersistStats,
 		"no-persist-stats",
@@ -229,9 +236,9 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := server.RpcServer(ctx, pcs, socketPath)
+			err := server.RpcServer(ctx, pcs, socketPath, deleteOldSocket)
 			if err != nil {
-				slog.Warn(fmt.Sprintf("RPC Server didn't gracefully exit: %v", err))
+				slog.Error(fmt.Sprintf("rpc server error: %v", err))
 			}
 		}()
 	} else {
