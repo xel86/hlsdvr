@@ -382,7 +382,9 @@ loop:
 						}
 						digest.OutputPath = destPath
 						digest.BytesWritten = n
-						digest.AvgBytesPerSecond = (n / uint64(digest.RecordingDuration))
+						if digest.RecordingDuration > 0 {
+							digest.AvgBytesPerSecond = (n / uint64(digest.RecordingDuration))
+						}
 					}
 				}
 

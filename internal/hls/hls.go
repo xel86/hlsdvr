@@ -408,8 +408,12 @@ func (r *Recorder) Record() (RecordingDigest, error) {
 		r.digestMutex.Lock()
 		r.digest.RecordingDuration += totalDuration
 		r.digest.BytesWritten += uint64(bytesThisIter)
-		r.digest.BytesPerSecond = uint64(bytesThisIter / playlist.TargetDuration)
-		r.digest.AvgBytesPerSecond = (r.digest.BytesWritten / uint64(r.digest.RecordingDuration))
+		if playlist.TargetDuration > 0 {
+			r.digest.BytesPerSecond = uint64(bytesThisIter / playlist.TargetDuration)
+		}
+		if r.digest.RecordingDuration > 0 {
+			r.digest.AvgBytesPerSecond = (r.digest.BytesWritten / uint64(r.digest.RecordingDuration))
+		}
 		r.digest.GracefulEnd = playlist.Ended
 		r.digestMutex.Unlock()
 
