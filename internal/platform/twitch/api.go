@@ -383,11 +383,12 @@ func (c *APIClient) getPlaybackAccessToken(userLogin string) (*StreamPlaybackAcc
 			"isVod":      false,
 			"vodID":      "",
 			"playerType": "site",
+			"platform":   "web",
 		},
 		"extensions": map[string]any{
 			"persistedQuery": map[string]any{
 				"version":    1,
-				"sha256Hash": "0828119ded1c13477966434e15800ff57ddacf13ba1911c129dc2200705b0712",
+				"sha256Hash": "ed230aa1e33e07eebb8928504583da78a5173989fadfb1ac94be06a04f3cdbe9",
 			},
 		},
 	}
@@ -435,7 +436,7 @@ func (c *APIClient) getPlaybackAccessToken(userLogin string) (*StreamPlaybackAcc
 // Make the authenticated usher request url string to get the m3u8 variant playlist for a stream.
 // Implementation based on streamlink's twitch plugin.
 func makeUsherM3U8PlaylistUrl(userLogin string, token *StreamPlaybackAccessToken) string {
-	usherUrl := fmt.Sprintf("https://usher.ttvnw.net/api/channel/hls/%s.m3u8", userLogin)
+	usherUrl := fmt.Sprintf("https://usher.ttvnw.net/api/v2/channel/hls/%s.m3u8", userLogin)
 
 	params := url.Values{}
 	params.Add("sig", token.Signature)
